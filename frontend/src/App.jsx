@@ -3,8 +3,8 @@ import Dashboard from './components/Dashboard';
 import StockTable from './components/StockTable';
 import PropertyTable from './components/PropertyTable';
 import {
-  getPortfolio, getStocks, addStock, deleteStock, refreshStock,
-  getProperties, addProperty, deleteProperty, refreshProperty,
+  getPortfolio, getStocks, addStock, updateStock, deleteStock, refreshStock,
+  getProperties, addProperty, updateProperty, deleteProperty, refreshProperty,
 } from './api';
 
 const POLL_INTERVAL = 5000;
@@ -45,6 +45,11 @@ export default function App() {
     await fetchAll();
   };
 
+  const handleUpdateStock = async (id, data) => {
+    await updateStock(id, data);
+    await fetchAll();
+  };
+
   const handleDeleteStock = async (id) => {
     if (!confirm('Delete this stock?')) return;
     await deleteStock(id);
@@ -58,6 +63,11 @@ export default function App() {
 
   const handleAddProperty = async (data) => {
     await addProperty(data);
+    await fetchAll();
+  };
+
+  const handleUpdateProperty = async (id, data) => {
+    await updateProperty(id, data);
     await fetchAll();
   };
 
@@ -87,12 +97,14 @@ export default function App() {
         stocks={stocks}
         marketOpen={marketOpen}
         onAdd={handleAddStock}
+        onUpdate={handleUpdateStock}
         onDelete={handleDeleteStock}
         onRefresh={handleRefreshStock}
       />
       <PropertyTable
         properties={properties}
         onAdd={handleAddProperty}
+        onUpdate={handleUpdateProperty}
         onDelete={handleDeleteProperty}
         onRefresh={handleRefreshProperty}
       />

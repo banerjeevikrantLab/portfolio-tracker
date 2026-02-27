@@ -1,11 +1,20 @@
 import yfinance as yf
 from datetime import datetime, timezone
 
+# Use curl_cffi to bypass Yahoo's TLS fingerprinting / bot protection
+def _get_session():
+    try:
+        from curl_cffi import requests
+        return requests.Session(impersonate="chrome", timeout=10)
+    except ImportError:
+        return None
+
 
 def fetch_stock_data(ticker: str) -> dict:
     """Fetch current price and company name for a single ticker."""
     try:
-        t = yf.Ticker(ticker)
+        session = _get_session()
+        t = yf.Ticker(ticker, session=session)
 
         current_price = 0.0
         # Try 1d history first (works during market hours)
@@ -63,6 +72,7 @@ def fetch_batch_prices(tickers: list[str]) -> dict[str, float]:
     if not tickers:
         return {}
 
+    session = _get_session()
     results = {t: 0.0 for t in tickers}
 
     def _extract_prices(data, interval_used: str) -> bool:
@@ -95,7 +105,8 @@ def fetch_batch_prices(tickers: list[str]) -> dict[str, float]:
     # Try 1m first (live prices during market hours)
     try:
         data = yf.download(
-            tickers, period="1d", interval="1m", group_by="ticker", progress=False, threads=False
+            tickers, period="1d", interval="1m", group_by="ticker", progress=False, threads=False,
+            session=session
         )
         if _extract_prices(data, "1m"):
             return results
@@ -105,7 +116,8 @@ def fetch_batch_prices(tickers: list[str]) -> dict[str, float]:
     # Fallback: 1d interval (last close - works when market closed)
     try:
         data = yf.download(
-            tickers, period="5d", interval="1d", group_by="ticker", progress=False, threads=False
+            tickers, period="5d", interval="1d", group_by="ticker", progress=False, threads=False,
+            session=session
         )
         _extract_prices(data, "1d")
     except Exception as e:

@@ -1,20 +1,40 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
-export default function AddStockModal({ onAdd, onClose }) {
+const STOCK_CATEGORIES = [
+  { value: 'individual', label: 'Individual' },
+  { value: 'diversified', label: 'Diversified' },
+  { value: 'cash_equivalent', label: 'Cash Equivalent' },
+];
+
+export default function AddStockModal({ stock, onAdd, onUpdate, onClose }) {
+  const isEdit = !!stock;
   const [ticker, setTicker] = useState('');
   const [shares, setShares] = useState('');
-  const [avgCost, setAvgCost] = useState('');
+  const [category, setCategory] = useState('individual');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (stock) {
+      setTicker(stock.ticker || '');
+      setShares(String(stock.shares ?? ''));
+      setCategory(stock.category || 'individual');
+    }
+  }, [stock]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!ticker || !shares || !avgCost) return;
+    if (!ticker || !shares) return;
     setLoading(true);
     try {
-      await onAdd({ ticker, shares: parseFloat(shares), avg_cost: parseFloat(avgCost) });
+      const data = { ticker, shares: parseFloat(shares), category };
+      if (isEdit) {
+        await onUpdate(stock.id, data);
+      } else {
+        await onAdd(data);
+      }
       onClose();
     } catch (err) {
-      alert('Failed to add stock: ' + (err.response?.data?.error || err.message));
+      alert('Failed to ' + (isEdit ? 'update' : 'add') + ' stock: ' + (err.response?.data?.error || err.message));
     } finally {
       setLoading(false);
     }
@@ -23,7 +43,7 @@ export default function AddStockModal({ onAdd, onClose }) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
-        <h2 className="text-xl font-bold mb-4">Add Stock</h2>
+        <h2 className="text-xl font-bold mb-4">{isEdit ? 'Edit Stock' : 'Add Stock'}</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm text-gray-400 mb-1">Ticker Symbol</label>
@@ -49,21 +69,21 @@ export default function AddStockModal({ onAdd, onClose }) {
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Average Cost Per Share ($)</label>
-            <input
-              type="number"
-              step="any"
-              value={avgCost}
-              onChange={e => setAvgCost(e.target.value)}
-              placeholder="e.g. 150.00"
+            <label className="block text-sm text-gray-400 mb-1">Category</label>
+            <select
+              value={category}
+              onChange={e => setCategory(e.target.value)}
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              required
-            />
+            >
+              {STOCK_CATEGORIES.map(c => (
+                <option key={c.value} value={c.value}>{c.label}</option>
+              ))}
+            </select>
           </div>
           <div className="flex gap-3 justify-end pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition">Cancel</button>
             <button type="submit" disabled={loading} className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition disabled:opacity-50">
-              {loading ? 'Adding...' : 'Add Stock'}
+              {loading ? (isEdit ? 'Saving...' : 'Adding...') : (isEdit ? 'Save' : 'Add Stock')}
             </button>
           </div>
         </form>

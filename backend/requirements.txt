@@ -3,7 +3,8 @@ flask-cors==5.0.1
 flask-sqlalchemy==3.1.1
 pymysql==1.1.1
 cryptography==44.0.0
-yfinance==0.2.54
+yfinance>=0.2.60
+curl_cffi>=0.5.0
 apscheduler==3.11.0
 requests==2.32.3
 beautifulsoup4==4.13.3

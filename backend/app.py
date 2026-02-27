@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from sqlalchemy import text
 from models import db, Stock, Property
 from services.stock_service import fetch_stock_data, fetch_batch_prices, is_market_open
 from services.redfin_service import get_property_data, get_property_data_from_url, scrape_redfin_estimate
@@ -24,6 +25,21 @@ db.init_app(app)
 
 with app.app_context():
     db.create_all()
+    # Migration: add mortgage_amount if missing (replaces purchase_price)
+    if "sqlite" in _db_url:
+        try:
+            db.session.execute(text("ALTER TABLE properties ADD COLUMN mortgage_amount REAL DEFAULT 0"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            pass  # column may already exist
+        # Migration: add category to stocks
+        try:
+            db.session.execute(text("ALTER TABLE stocks ADD COLUMN category VARCHAR(30) DEFAULT 'individual'"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            pass  # column may already exist
 
 
 # ---------------------------------------------------------------------------
@@ -62,24 +78,24 @@ def get_portfolio():
     properties = Property.query.all()
 
     total_stock_value = sum(s.shares * (s.current_price or 0) for s in stocks)
-    total_stock_cost = sum(s.shares * s.avg_cost for s in stocks)
-    total_property_value = sum(p.estimated_value or 0 for p in properties)
-    total_property_cost = sum(p.purchase_price or 0 for p in properties)
+    total_property_equity = sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
 
-    total_value = total_stock_value + total_property_value
-    total_cost = total_stock_cost + total_property_cost
-    total_gain = total_value - total_cost
-    total_gain_pct = (total_gain / total_cost * 100) if total_cost else 0
+    total_value = total_stock_value + total_property_equity
+
+    # Stock value by category for distribution chart
+    stock_by_category = {}
+    for s in stocks:
+        cat = (s.category or "individual").lower()
+        if cat not in ("individual", "diversified", "cash_equivalent"):
+            cat = "individual"
+        val = s.shares * (s.current_price or 0)
+        stock_by_category[cat] = stock_by_category.get(cat, 0) + val
 
     return jsonify({
         "total_value": round(total_value, 2),
-        "total_cost": round(total_cost, 2),
-        "total_gain": round(total_gain, 2),
-        "total_gain_pct": round(total_gain_pct, 2),
         "stock_value": round(total_stock_value, 2),
-        "stock_cost": round(total_stock_cost, 2),
-        "property_value": round(total_property_value, 2),
-        "property_cost": round(total_property_cost, 2),
+        "property_equity": round(total_property_equity, 2),
+        "stock_by_category": {k: round(v, 2) for k, v in stock_by_category.items()},
         "stock_count": len(stocks),
         "property_count": len(properties),
         "market_open": is_market_open(),
@@ -104,7 +120,9 @@ def add_stock():
     data = request.get_json()
     ticker = data.get("ticker", "").strip().upper()
     shares = float(data.get("shares", 0))
-    avg_cost = float(data.get("avg_cost", 0))
+    category = (data.get("category") or "individual").lower()
+    if category not in ("individual", "diversified", "cash_equivalent"):
+        category = "individual"
 
     if not ticker or shares <= 0:
         return jsonify({"error": "Ticker and positive shares are required"}), 400
@@ -115,7 +133,7 @@ def add_stock():
         ticker=ticker,
         company_name=stock_data["company_name"],
         shares=shares,
-        avg_cost=avg_cost,
+        category=category,
         current_price=stock_data["current_price"],
         last_updated=datetime.now(timezone.utc),
     )
@@ -131,8 +149,10 @@ def update_stock(stock_id):
 
     if "shares" in data:
         stock.shares = float(data["shares"])
-    if "avg_cost" in data:
-        stock.avg_cost = float(data["avg_cost"])
+    if "category" in data:
+        cat = (data["category"] or "individual").lower()
+        if cat in ("individual", "diversified", "cash_equivalent"):
+            stock.category = cat
     if "ticker" in data:
         new_ticker = data["ticker"].strip().upper()
         if new_ticker != stock.ticker:
@@ -180,7 +200,8 @@ def add_property():
     data = request.get_json()
     address = data.get("address", "").strip()
     redfin_url = data.get("redfin_url", "").strip()
-    purchase_price = float(data.get("purchase_price", 0))
+    mortgage_amount = float(data.get("mortgage_amount", 0))
+    manual_estimated_value = data.get("estimated_value")
 
     if not address and not redfin_url:
         return jsonify({"error": "Address or Redfin link is required"}), 400
@@ -190,11 +211,20 @@ def add_property():
     else:
         redfin_data = get_property_data(address)
 
+    estimated_value = redfin_data.get("estimated_value", 0) if redfin_data else 0
+    if manual_estimated_value is not None:
+        try:
+            v = float(manual_estimated_value)
+            if v > 0:
+                estimated_value = v
+        except (ValueError, TypeError):
+            pass
+
     prop = Property(
         address=redfin_data["address"] if redfin_data else (address or "Property"),
         redfin_url=redfin_data.get("redfin_url", redfin_url) if redfin_data else redfin_url,
-        purchase_price=purchase_price,
-        estimated_value=redfin_data.get("estimated_value", 0) if redfin_data else 0,
+        mortgage_amount=mortgage_amount,
+        estimated_value=estimated_value,
         beds=redfin_data.get("beds", 0) if redfin_data else 0,
         baths=redfin_data.get("baths", 0) if redfin_data else 0,
         sqft=redfin_data.get("sqft", 0) if redfin_data else 0,
@@ -212,8 +242,10 @@ def update_property(prop_id):
 
     if "address" in data:
         prop.address = data["address"].strip()
-    if "purchase_price" in data:
-        prop.purchase_price = float(data["purchase_price"])
+    if "redfin_url" in data:
+        prop.redfin_url = data["redfin_url"].strip()
+    if "mortgage_amount" in data:
+        prop.mortgage_amount = float(data["mortgage_amount"])
     if "estimated_value" in data:
         prop.estimated_value = float(data["estimated_value"])
 
