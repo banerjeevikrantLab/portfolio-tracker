@@ -17,12 +17,21 @@ class Stock(db.Model):
     category = db.Column(db.String(30), default="individual")  # individual, diversified, cash_equivalent
     avg_cost = db.Column(db.Float, nullable=True, default=0)  # kept for DB compat, not displayed
     current_price = db.Column(db.Float, default=0.0)
+    previous_close = db.Column(db.Float, default=0.0)
+    dividend_yield = db.Column(db.Float, default=0.0)
+    annual_dividend = db.Column(db.Float, default=0.0)
+    week52_high = db.Column(db.Float, default=0.0)
+    week52_low = db.Column(db.Float, default=0.0)
     last_updated = db.Column(
         db.DateTime, default=lambda: datetime.now(timezone.utc)
     )
 
     def to_dict(self):
         market_value = self.shares * (self.current_price or 0)
+        prev = self.previous_close or 0
+        cur = self.current_price or 0
+        day_change = round(cur - prev, 2) if prev else 0
+        day_change_pct = round(day_change / prev * 100, 2) if prev else 0
         return {
             "id": self.id,
             "ticker": self.ticker,
@@ -30,7 +39,14 @@ class Stock(db.Model):
             "shares": self.shares,
             "category": self.category or "individual",
             "current_price": self.current_price,
+            "previous_close": prev,
+            "day_change": day_change,
+            "day_change_pct": day_change_pct,
             "market_value": round(market_value, 2),
+            "dividend_yield": self.dividend_yield or 0,
+            "annual_dividend": self.annual_dividend or 0,
+            "week52_high": self.week52_high or 0,
+            "week52_low": self.week52_low or 0,
             "last_updated": self.last_updated.isoformat() if self.last_updated else None,
         }
 
@@ -64,3 +80,13 @@ class Property(db.Model):
             "sqft": self.sqft,
             "last_updated": self.last_updated.isoformat() if self.last_updated else None,
         }
+
+
+class PortfolioSnapshot(db.Model):
+    __tablename__ = "portfolio_snapshots"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    timestamp = db.Column(db.DateTime, nullable=False)
+    total_value = db.Column(db.Float, default=0.0)
+    stock_value = db.Column(db.Float, default=0.0)
+    property_equity = db.Column(db.Float, default=0.0)

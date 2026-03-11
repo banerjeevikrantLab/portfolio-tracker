@@ -10,36 +10,78 @@ def _get_session():
         return None
 
 
+def _extract_dividend_info(info: dict) -> dict:
+    """Extract dividend data from yfinance info dict, handling both stocks and ETFs.
+
+    Stocks use dividendRate/dividendYield; ETFs use trailingAnnualDividendRate/
+    trailingAnnualDividendYield or yield. Some ETFs (e.g. SGOV) only have a yield
+    with no rate -- derive annual_dividend from yield * price in that case.
+    """
+    annual_div = float(info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0)
+
+    # dividendYield is already a percentage (e.g. 4.25 = 4.25%)
+    # trailingAnnualDividendYield and yield are decimals (e.g. 0.0425 = 4.25%)
+    div_yield = 0.0
+    yield_decimal = 0.0
+    if info.get("dividendYield"):
+        div_yield = round(float(info["dividendYield"]), 2)
+        yield_decimal = float(info["dividendYield"]) / 100
+    elif info.get("trailingAnnualDividendYield"):
+        yield_decimal = float(info["trailingAnnualDividendYield"])
+        div_yield = round(yield_decimal * 100, 2)
+    elif info.get("yield"):
+        yield_decimal = float(info["yield"])
+        div_yield = round(yield_decimal * 100, 2)
+
+    if annual_div == 0 and yield_decimal > 0:
+        price = float(info.get("previousClose") or info.get("regularMarketPrice") or 0)
+        if price > 0:
+            annual_div = round(price * yield_decimal, 2)
+
+    return {
+        "annual_dividend": round(annual_div, 2),
+        "dividend_yield": div_yield,
+    }
+
+
 def fetch_stock_data(ticker: str) -> dict:
-    """Fetch current price and company name for a single ticker."""
+    """Fetch current price, previous close, dividends, 52-week range, and company name."""
+    result = {
+        "current_price": 0.0,
+        "previous_close": 0.0,
+        "dividend_yield": 0.0,
+        "annual_dividend": 0.0,
+        "week52_high": 0.0,
+        "week52_low": 0.0,
+        "company_name": ticker.upper(),
+    }
     try:
         session = _get_session()
         t = yf.Ticker(ticker, session=session)
 
         current_price = 0.0
-        # Try 1d history first (works during market hours)
         hist = t.history(period="1d")
         if not hist.empty:
             current_price = float(hist["Close"].iloc[-1])
 
-        # Fallback: use daily bars (last close) when intraday is empty (market closed)
         if current_price <= 0:
             hist = t.history(period="5d", interval="1d")
             if not hist.empty:
                 current_price = float(hist["Close"].iloc[-1])
 
-        # Fallback: fast_info or info (has regularMarketPrice, previousClose)
+        info = {}
+        try:
+            info = t.info or {}
+        except Exception:
+            pass
+
         if current_price <= 0:
-            try:
-                info = t.info
-                current_price = float(
-                    info.get("regularMarketPrice")
-                    or info.get("previousClose")
-                    or info.get("currentPrice")
-                    or 0
-                )
-            except Exception:
-                pass
+            current_price = float(
+                info.get("regularMarketPrice")
+                or info.get("previousClose")
+                or info.get("currentPrice")
+                or 0
+            )
 
         if current_price <= 0 and hasattr(t, "fast_info"):
             try:
@@ -51,20 +93,17 @@ def fetch_stock_data(ticker: str) -> dict:
             except Exception:
                 pass
 
-        company_name = ticker.upper()
-        try:
-            full_info = t.info
-            company_name = full_info.get("shortName") or full_info.get("longName") or ticker.upper()
-        except Exception:
-            pass
-
-        return {
-            "current_price": round(current_price, 2),
-            "company_name": company_name or ticker.upper(),
-        }
+        result["current_price"] = round(current_price, 2)
+        result["company_name"] = info.get("shortName") or info.get("longName") or ticker.upper()
+        result["previous_close"] = round(float(info.get("previousClose") or info.get("regularMarketPreviousClose") or 0), 2)
+        div_info = _extract_dividend_info(info)
+        result["dividend_yield"] = div_info["dividend_yield"]
+        result["annual_dividend"] = div_info["annual_dividend"]
+        result["week52_high"] = round(float(info.get("fiftyTwoWeekHigh") or 0), 2)
+        result["week52_low"] = round(float(info.get("fiftyTwoWeekLow") or 0), 2)
     except Exception as e:
         print(f"Error fetching data for {ticker}: {e}")
-        return {"current_price": 0.0, "company_name": ticker.upper()}
+    return result
 
 
 def fetch_batch_prices(tickers: list[str]) -> dict[str, float]:
@@ -123,6 +162,30 @@ def fetch_batch_prices(tickers: list[str]) -> dict[str, float]:
     except Exception as e:
         print(f"Error in batch price fetch (1d): {e}")
 
+    return results
+
+
+def fetch_batch_extended_info(tickers: list[str]) -> dict[str, dict]:
+    """Fetch previous_close, dividends, and 52-week range for multiple tickers."""
+    if not tickers:
+        return {}
+    session = _get_session()
+    results = {}
+    for ticker in tickers:
+        entry = {"previous_close": 0.0, "dividend_yield": 0.0, "annual_dividend": 0.0,
+                 "week52_high": 0.0, "week52_low": 0.0}
+        try:
+            t = yf.Ticker(ticker, session=session)
+            info = t.info or {}
+            entry["previous_close"] = round(float(info.get("previousClose") or info.get("regularMarketPreviousClose") or 0), 2)
+            div_info = _extract_dividend_info(info)
+            entry["dividend_yield"] = div_info["dividend_yield"]
+            entry["annual_dividend"] = div_info["annual_dividend"]
+            entry["week52_high"] = round(float(info.get("fiftyTwoWeekHigh") or 0), 2)
+            entry["week52_low"] = round(float(info.get("fiftyTwoWeekLow") or 0), 2)
+        except Exception as e:
+            print(f"Error fetching extended info for {ticker}: {e}")
+        results[ticker] = entry
     return results
 
 

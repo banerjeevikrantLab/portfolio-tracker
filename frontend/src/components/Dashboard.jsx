@@ -1,4 +1,5 @@
 import PortfolioDistributionChart from './PortfolioDistributionChart';
+import PortfolioHistoryChart from './PortfolioHistoryChart';
 
 function formatCurrency(val) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val || 0);
@@ -14,7 +15,12 @@ export default function Dashboard({ portfolio }) {
     stock_count,
     property_count,
     market_open,
+    total_day_change,
+    total_day_change_pct,
   } = portfolio;
+
+  const dayChangeColor = total_day_change > 0 ? 'text-emerald-400' : total_day_change < 0 ? 'text-red-400' : 'text-gray-400';
+  const dayChangeSign = total_day_change >= 0 ? '+' : '';
 
   return (
     <div className="mb-8">
@@ -29,6 +35,9 @@ export default function Dashboard({ portfolio }) {
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <p className="text-sm text-gray-400 mb-1">Total Portfolio Value</p>
           <p className="text-3xl font-bold">{formatCurrency(total_value)}</p>
+          <p className={`text-sm mt-2 font-medium ${dayChangeColor}`}>
+            {dayChangeSign}{formatCurrency(Math.abs(total_day_change))} ({dayChangeSign}{total_day_change_pct?.toFixed(2) ?? '0.00'}%) today
+          </p>
         </div>
 
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -41,6 +50,10 @@ export default function Dashboard({ portfolio }) {
           <p className="text-2xl font-bold">{formatCurrency(property_equity)}</p>
           <p className="text-xs text-gray-500 mt-1">Equity (value − mortgage)</p>
         </div>
+      </div>
+
+      <div className="mt-6">
+        <PortfolioHistoryChart />
       </div>
 
       <div className="mt-6">

@@ -11,6 +11,32 @@ function formatTime(iso) {
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+function formatChange(val, pct) {
+  if (!val && !pct) return '—';
+  const sign = val >= 0 ? '+' : '';
+  return `${sign}$${Math.abs(val).toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
+}
+
+function RangeBar({ low, high, current }) {
+  if (!low || !high || high <= low) return <span className="text-gray-600">—</span>;
+  const pct = Math.min(Math.max(((current - low) / (high - low)) * 100, 0), 100);
+  return (
+    <div
+      className="flex items-center gap-1.5 min-w-[100px]"
+      title={`Low: $${low.toFixed(2)}  Current: $${current.toFixed(2)}  High: $${high.toFixed(2)}`}
+    >
+      <span className="text-[10px] text-gray-600 tabular-nums">${low.toFixed(0)}</span>
+      <div className="relative flex-1 h-1.5 bg-gray-700 rounded-full">
+        <div
+          className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-blue-400 border border-gray-900"
+          style={{ left: `calc(${pct}% - 5px)` }}
+        />
+      </div>
+      <span className="text-[10px] text-gray-600 tabular-nums">${high.toFixed(0)}</span>
+    </div>
+  );
+}
+
 function StockList({ stocks, totalValue, onUpdate, onDelete, onRefresh, setEditingStock, setShowModal }) {
   if (stocks.length === 0) return null;
 
@@ -26,8 +52,11 @@ function StockList({ stocks, totalValue, onUpdate, onDelete, onRefresh, setEditi
             <th className="pb-3 pr-4 font-medium">Company</th>
             <th className="pb-3 pr-4 font-medium text-right">Shares</th>
             <th className="pb-3 pr-4 font-medium text-right">Price</th>
+            <th className="pb-3 pr-4 font-medium text-right">Day Change</th>
             <th className="pb-3 pr-4 font-medium text-right">Market Value</th>
             {showPct && <th className="pb-3 pr-4 font-medium text-right">%</th>}
+            <th className="pb-3 pr-4 font-medium text-right">Div Yield</th>
+            <th className="pb-3 pr-3 font-medium">52W Range</th>
             <th className="pb-3 pr-4 font-medium text-right">Updated</th>
             <th className="pb-3 font-medium"></th>
           </tr>
@@ -35,14 +64,24 @@ function StockList({ stocks, totalValue, onUpdate, onDelete, onRefresh, setEditi
         <tbody>
           {sorted.map(s => {
             const pct = showPct ? ((s.market_value || 0) / totalValue * 100) : null;
+            const changeColor = s.day_change > 0 ? 'text-emerald-400' : s.day_change < 0 ? 'text-red-400' : 'text-gray-400';
             return (
             <tr key={s.id} className="border-b border-gray-800/50 hover:bg-gray-900/50 transition">
               <td className="py-3 pr-4 font-mono font-bold text-blue-400">{s.ticker}</td>
               <td className="py-3 pr-4 text-gray-300 max-w-[200px] truncate">{s.company_name}</td>
               <td className="py-3 pr-4 text-right tabular-nums">{s.shares}</td>
               <td className="py-3 pr-4 text-right tabular-nums font-medium">{formatCurrency(s.current_price)}</td>
+              <td className={`py-3 pr-4 text-right tabular-nums text-xs font-medium ${changeColor}`}>
+                {formatChange(s.day_change, s.day_change_pct)}
+              </td>
               <td className="py-3 pr-4 text-right tabular-nums font-medium">{formatCurrency(s.market_value)}</td>
               {showPct && <td className="py-3 pr-4 text-right tabular-nums text-gray-400">{pct.toFixed(1)}%</td>}
+              <td className="py-3 pr-4 text-right tabular-nums text-gray-400">
+                {s.dividend_yield ? `${s.dividend_yield.toFixed(2)}%` : '—'}
+              </td>
+              <td className="py-3 pr-3">
+                <RangeBar low={s.week52_low} high={s.week52_high} current={s.current_price} />
+              </td>
               <td className="py-3 pr-4 text-right text-xs text-gray-500">{formatTime(s.last_updated)}</td>
               <td className="py-3 flex gap-2">
                 {onUpdate && (

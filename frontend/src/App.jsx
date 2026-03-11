@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Dashboard from './components/Dashboard';
 import StockTable from './components/StockTable';
 import PropertyTable from './components/PropertyTable';
+import DividendSection from './components/DividendSection';
 import {
   getPortfolio, getStocks, addStock, updateStock, deleteStock, refreshStock,
   getProperties, addProperty, updateProperty, deleteProperty, refreshProperty,
@@ -108,6 +109,7 @@ export default function App() {
         onDelete={handleDeleteProperty}
         onRefresh={handleRefreshProperty}
       />
+      <DividendSection stocks={stocks} />
     </div>
   );
 }

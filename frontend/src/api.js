@@ -57,3 +57,8 @@ export async function refreshProperty(id) {
   const { data } = await api.post(`/properties/${id}/refresh`);
   return data;
 }
+
+export async function getPortfolioHistory(period = '1M') {
+  const { data } = await api.get(`/portfolio/history?period=${period}`);
+  return data;
+}

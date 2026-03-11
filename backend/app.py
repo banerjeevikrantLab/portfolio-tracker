@@ -1,11 +1,11 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sqlalchemy import text
-from models import db, Stock, Property
-from services.stock_service import fetch_stock_data, fetch_batch_prices, is_market_open
+from models import db, Stock, Property, PortfolioSnapshot
+from services.stock_service import fetch_stock_data, fetch_batch_prices, fetch_batch_extended_info, is_market_open
 from services.redfin_service import get_property_data, get_property_data_from_url, scrape_redfin_estimate
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import atexit
 import os
 
@@ -39,7 +39,18 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
-            pass  # column may already exist
+        for col in [
+            "previous_close REAL DEFAULT 0",
+            "dividend_yield REAL DEFAULT 0",
+            "annual_dividend REAL DEFAULT 0",
+            "week52_high REAL DEFAULT 0",
+            "week52_low REAL DEFAULT 0",
+        ]:
+            try:
+                db.session.execute(text(f"ALTER TABLE stocks ADD COLUMN {col}"))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
 
 
 # ---------------------------------------------------------------------------
@@ -62,10 +73,62 @@ def update_all_stock_prices():
         db.session.commit()
 
 
+def update_extended_info():
+    """Refresh previous_close, dividends, and 52-week data (runs less frequently)."""
+    with app.app_context():
+        stocks = Stock.query.all()
+        if not stocks:
+            return
+        tickers = list({s.ticker.upper() for s in stocks})
+        extended = fetch_batch_extended_info(tickers)
+        for stock in stocks:
+            info = extended.get(stock.ticker.upper())
+            if not info:
+                continue
+            if info["previous_close"]:
+                stock.previous_close = info["previous_close"]
+            if info["dividend_yield"]:
+                stock.dividend_yield = info["dividend_yield"]
+            if info["annual_dividend"]:
+                stock.annual_dividend = info["annual_dividend"]
+            if info["week52_high"]:
+                stock.week52_high = info["week52_high"]
+            if info["week52_low"]:
+                stock.week52_low = info["week52_low"]
+        db.session.commit()
+
+
+def take_portfolio_snapshot():
+    """Record current portfolio value for the history chart."""
+    with app.app_context():
+        stocks = Stock.query.all()
+        properties = Property.query.all()
+        stock_value = sum(s.shares * (s.current_price or 0) for s in stocks)
+        property_equity = sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
+        total_value = stock_value + property_equity
+        if total_value <= 0:
+            return
+        snapshot = PortfolioSnapshot(
+            timestamp=datetime.now(timezone.utc),
+            total_value=round(total_value, 2),
+            stock_value=round(stock_value, 2),
+            property_equity=round(property_equity, 2),
+        )
+        db.session.add(snapshot)
+        db.session.commit()
+
+
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(update_all_stock_prices, "interval", seconds=5, id="stock_updater")
+scheduler.add_job(update_extended_info, "interval", minutes=30, id="extended_info_updater")
+scheduler.add_job(take_portfolio_snapshot, "interval", minutes=30, id="snapshot_recorder")
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown(wait=False))
+
+# Take an initial snapshot and extended-info fetch on startup
+with app.app_context():
+    update_extended_info()
+    take_portfolio_snapshot()
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +145,19 @@ def get_portfolio():
 
     total_value = total_stock_value + total_property_equity
 
+    # Day change across all stocks
+    total_day_change = 0.0
+    total_prev_value = 0.0
+    for s in stocks:
+        prev = s.previous_close or 0
+        cur = s.current_price or 0
+        total_day_change += (cur - prev) * s.shares
+        total_prev_value += prev * s.shares
+    total_day_change_pct = round(total_day_change / total_prev_value * 100, 2) if total_prev_value else 0
+
+    # Dividend income
+    total_annual_dividends = sum((s.annual_dividend or 0) * s.shares for s in stocks)
+
     # Stock value by category for distribution chart
     stock_by_category = {}
     for s in stocks:
@@ -95,10 +171,43 @@ def get_portfolio():
         "total_value": round(total_value, 2),
         "stock_value": round(total_stock_value, 2),
         "property_equity": round(total_property_equity, 2),
+        "total_day_change": round(total_day_change, 2),
+        "total_day_change_pct": total_day_change_pct,
+        "total_annual_dividends": round(total_annual_dividends, 2),
         "stock_by_category": {k: round(v, 2) for k, v in stock_by_category.items()},
         "stock_count": len(stocks),
         "property_count": len(properties),
         "market_open": is_market_open(),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Portfolio history
+# ---------------------------------------------------------------------------
+
+@app.route("/api/portfolio/history", methods=["GET"])
+def get_portfolio_history():
+    period = request.args.get("period", "1M")
+    period_map = {"1D": 1, "1W": 7, "1M": 30, "3M": 90, "1Y": 365, "ALL": None}
+    days = period_map.get(period, 30)
+
+    query = PortfolioSnapshot.query.order_by(PortfolioSnapshot.timestamp.asc())
+    if days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        query = query.filter(PortfolioSnapshot.timestamp >= cutoff)
+
+    snapshots = query.all()
+    return jsonify({
+        "period": period,
+        "snapshots": [
+            {
+                "timestamp": s.timestamp.isoformat(),
+                "total_value": s.total_value,
+                "stock_value": s.stock_value,
+                "property_equity": s.property_equity,
+            }
+            for s in snapshots
+        ],
     })
 
 
@@ -135,6 +244,11 @@ def add_stock():
         shares=shares,
         category=category,
         current_price=stock_data["current_price"],
+        previous_close=stock_data.get("previous_close", 0),
+        dividend_yield=stock_data.get("dividend_yield", 0),
+        annual_dividend=stock_data.get("annual_dividend", 0),
+        week52_high=stock_data.get("week52_high", 0),
+        week52_low=stock_data.get("week52_low", 0),
         last_updated=datetime.now(timezone.utc),
     )
     db.session.add(stock)
@@ -160,6 +274,11 @@ def update_stock(stock_id):
             stock_data = fetch_stock_data(new_ticker)
             stock.company_name = stock_data["company_name"]
             stock.current_price = stock_data["current_price"]
+            stock.previous_close = stock_data.get("previous_close", 0)
+            stock.dividend_yield = stock_data.get("dividend_yield", 0)
+            stock.annual_dividend = stock_data.get("annual_dividend", 0)
+            stock.week52_high = stock_data.get("week52_high", 0)
+            stock.week52_low = stock_data.get("week52_low", 0)
 
     stock.last_updated = datetime.now(timezone.utc)
     db.session.commit()
@@ -180,6 +299,11 @@ def refresh_stock(stock_id):
     data = fetch_stock_data(stock.ticker)
     stock.current_price = data["current_price"]
     stock.company_name = data.get("company_name") or stock.company_name
+    stock.previous_close = data.get("previous_close", 0)
+    stock.dividend_yield = data.get("dividend_yield", 0)
+    stock.annual_dividend = data.get("annual_dividend", 0)
+    stock.week52_high = data.get("week52_high", 0)
+    stock.week52_low = data.get("week52_low", 0)
     stock.last_updated = datetime.now(timezone.utc)
     db.session.commit()
     return jsonify(stock.to_dict())
