@@ -188,7 +188,7 @@ def get_portfolio():
 @app.route("/api/portfolio/history", methods=["GET"])
 def get_portfolio_history():
     period = request.args.get("period", "1M")
-    period_map = {"1D": 1, "1W": 7, "1M": 30, "3M": 90, "1Y": 365, "ALL": None}
+    period_map = {"1W": 7, "1M": 30, "3M": 90, "1Y": 365, "ALL": None}
     days = period_map.get(period, 30)
 
     query = PortfolioSnapshot.query.order_by(PortfolioSnapshot.timestamp.asc())
