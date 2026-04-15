@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { getPortfolioHistory } from '../api';
 
-const PERIODS = ['1D', '1W', '1M', '3M', '1Y', 'ALL'];
+const PERIODS = ['1D', '1W', '1M', '3M', '1Y', '2Y', '3Y', '5Y', '10Y', 'ALL'];
 
 function formatCurrency(val) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val || 0);
@@ -76,14 +76,38 @@ export default function PortfolioHistoryChart() {
 
   const first = values[0];
   const last = values[values.length - 1];
+  const change = last - first;
+  const changePct = first ? (change / first) * 100 : 0;
   const isUp = last >= first;
   const strokeColor = isUp ? '#34d399' : '#f87171';
-  const fillColor = isUp ? '#34d39920' : '#f8717120';
+  const changeSign = change >= 0 ? '+' : '';
+
+  // Annualized return using first available snapshot as reference
+  const startDate = new Date(snapshots[0].timestamp);
+  const endDate = new Date(snapshots[snapshots.length - 1].timestamp);
+  const daysDiff = Math.max((endDate - startDate) / (1000 * 60 * 60 * 24), 1);
+  const longPeriods = new Set(['2Y', '3Y', '5Y', '10Y', 'ALL']);
+  const showAnnualized = longPeriods.has(period) && first > 0 && daysDiff >= 1;
+  let annualizedPct = 0;
+  if (showAnnualized) {
+    annualizedPct = (Math.pow(last / first, 365 / daysDiff) - 1) * 100;
+  }
+  const annSign = annualizedPct >= 0 ? '+' : '';
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-medium text-gray-400">Portfolio History</h3>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h3 className="text-sm font-medium text-gray-400">Portfolio History</h3>
+          <span className={`text-sm font-semibold ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
+            {changeSign}{formatCurrency(change)} ({changeSign}{changePct.toFixed(2)}%)
+          </span>
+          {showAnnualized && (
+            <span className={`text-sm font-semibold ${annualizedPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              Annualized: {annSign}{annualizedPct.toFixed(2)}%
+            </span>
+          )}
+        </div>
         <div className="flex gap-1">
           {PERIODS.map(p => (
             <button
@@ -114,9 +138,8 @@ export default function PortfolioHistoryChart() {
             dataKey="timestamp"
             tickFormatter={(v) => {
               const d = new Date(v);
-              return period === '1D'
-                ? d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-                : period === '1W' || period === '1M'
+              if (period === '1D') return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+              return period === '1W' || period === '1M'
                 ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
                 : d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
             }}

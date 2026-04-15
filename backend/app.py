@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sqlalchemy import text
 from models import db, Stock, Property, PortfolioSnapshot
-from services.stock_service import fetch_stock_data, fetch_batch_prices, fetch_batch_extended_info, is_market_open
+from services.stock_service import fetch_stock_data, fetch_batch_prices, fetch_batch_extended_info, fetch_news_for_tickers, is_market_open
 from services.redfin_service import get_property_data, get_property_data_from_url, scrape_redfin_estimate
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timezone, timedelta
@@ -188,7 +188,7 @@ def get_portfolio():
 @app.route("/api/portfolio/history", methods=["GET"])
 def get_portfolio_history():
     period = request.args.get("period", "1M")
-    period_map = {"1W": 7, "1M": 30, "3M": 90, "1Y": 365, "ALL": None}
+    period_map = {"1D": 1, "1W": 7, "1M": 30, "3M": 90, "1Y": 365, "2Y": 730, "3Y": 1095, "5Y": 1825, "10Y": 3650, "ALL": None}
     days = period_map.get(period, 30)
 
     query = PortfolioSnapshot.query.order_by(PortfolioSnapshot.timestamp.asc())
@@ -209,6 +209,70 @@ def get_portfolio_history():
             for s in snapshots
         ],
     })
+
+
+# ---------------------------------------------------------------------------
+# News (cached)
+# ---------------------------------------------------------------------------
+
+_news_cache = {"articles": [], "fetched_at": None}
+_NEWS_TTL = timedelta(minutes=15)
+
+
+@app.route("/api/news", methods=["GET"])
+def get_news():
+    global _news_cache
+
+    now = datetime.now(timezone.utc)
+    if _news_cache["fetched_at"] and (now - _news_cache["fetched_at"]) < _NEWS_TTL:
+        return jsonify({"articles": _news_cache["articles"]})
+
+    stocks = Stock.query.all()
+    if not stocks:
+        return jsonify({"articles": []})
+
+    ticker_info = {}
+    for s in stocks:
+        t = s.ticker.upper()
+        if t in ticker_info:
+            continue
+        prev = s.previous_close or 0
+        cur = s.current_price or 0
+        pct = round((cur - prev) / prev * 100, 2) if prev else 0
+        ticker_info[t] = {
+            "company_name": s.company_name or t,
+            "day_change_pct": pct,
+        }
+
+    tickers = list(ticker_info.keys())
+    raw_articles = fetch_news_for_tickers(tickers)
+
+    # Group by ticker, keep max 3 per ticker
+    per_ticker = {}
+    for a in raw_articles:
+        t = a["ticker"]
+        if t not in per_ticker:
+            per_ticker[t] = []
+        if len(per_ticker[t]) < 3:
+            info = ticker_info.get(t, {})
+            per_ticker[t].append({
+                **a,
+                "company_name": info.get("company_name", t),
+                "day_change_pct": info.get("day_change_pct", 0),
+            })
+
+    # Sort tickers: most negative first, then most positive
+    sorted_tickers = sorted(
+        per_ticker.keys(),
+        key=lambda t: ticker_info.get(t, {}).get("day_change_pct", 0),
+    )
+
+    articles = []
+    for t in sorted_tickers:
+        articles.extend(per_ticker[t])
+
+    _news_cache = {"articles": articles, "fetched_at": now}
+    return jsonify({"articles": articles})
 
 
 # ---------------------------------------------------------------------------

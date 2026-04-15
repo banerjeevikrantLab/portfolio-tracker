@@ -14,29 +14,19 @@ def _extract_dividend_info(info: dict) -> dict:
     """Extract dividend data from yfinance info dict, handling both stocks and ETFs.
 
     Stocks use dividendRate/dividendYield; ETFs use trailingAnnualDividendRate/
-    trailingAnnualDividendYield or yield. Some ETFs (e.g. SGOV) only have a yield
-    with no rate -- derive annual_dividend from yield * price in that case.
+    trailingAnnualDividendYield or yield.
     """
     annual_div = float(info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0)
 
     # dividendYield is already a percentage (e.g. 4.25 = 4.25%)
     # trailingAnnualDividendYield and yield are decimals (e.g. 0.0425 = 4.25%)
     div_yield = 0.0
-    yield_decimal = 0.0
     if info.get("dividendYield"):
         div_yield = round(float(info["dividendYield"]), 2)
-        yield_decimal = float(info["dividendYield"]) / 100
     elif info.get("trailingAnnualDividendYield"):
-        yield_decimal = float(info["trailingAnnualDividendYield"])
-        div_yield = round(yield_decimal * 100, 2)
+        div_yield = round(float(info["trailingAnnualDividendYield"]) * 100, 2)
     elif info.get("yield"):
-        yield_decimal = float(info["yield"])
-        div_yield = round(yield_decimal * 100, 2)
-
-    if annual_div == 0 and yield_decimal > 0:
-        price = float(info.get("previousClose") or info.get("regularMarketPrice") or 0)
-        if price > 0:
-            annual_div = round(price * yield_decimal, 2)
+        div_yield = round(float(info["yield"]) * 100, 2)
 
     return {
         "annual_dividend": round(annual_div, 2),
@@ -187,6 +177,81 @@ def fetch_batch_extended_info(tickers: list[str]) -> dict[str, dict]:
             print(f"Error fetching extended info for {ticker}: {e}")
         results[ticker] = entry
     return results
+
+
+def fetch_news_for_tickers(tickers: list[str]) -> list[dict]:
+    """Fetch recent news articles for multiple tickers via yfinance."""
+    if not tickers:
+        return []
+    session = _get_session()
+    seen_ids = set()
+    articles = []
+    for ticker in tickers:
+        try:
+            t = yf.Ticker(ticker, session=session)
+            news = t.news or []
+            for item in news:
+                content = item.get("content") or item
+                uid = content.get("id") or item.get("id") or item.get("uuid") or ""
+                if not uid or uid in seen_ids:
+                    continue
+                seen_ids.add(uid)
+
+                # Extract link from nested canonicalUrl or clickThroughUrl
+                link = ""
+                for url_key in ("canonicalUrl", "clickThroughUrl"):
+                    url_obj = content.get(url_key)
+                    if isinstance(url_obj, dict) and url_obj.get("url"):
+                        link = url_obj["url"]
+                        break
+                    elif isinstance(url_obj, str) and url_obj:
+                        link = url_obj
+                        break
+                if not link:
+                    link = content.get("link") or item.get("link") or ""
+
+                # Extract publisher from nested provider
+                publisher = ""
+                provider = content.get("provider")
+                if isinstance(provider, dict):
+                    publisher = provider.get("displayName") or ""
+                if not publisher:
+                    publisher = content.get("publisher") or item.get("publisher") or ""
+
+                # Extract thumbnail
+                thumbnail = ""
+                thumb_data = content.get("thumbnail") or item.get("thumbnail")
+                if isinstance(thumb_data, dict):
+                    resolutions = thumb_data.get("resolutions") or []
+                    if resolutions:
+                        thumbnail = resolutions[-1].get("url", "")
+
+                # Extract publish date (ISO string or unix timestamp)
+                published_at = ""
+                pub_date = content.get("pubDate") or ""
+                if pub_date:
+                    published_at = pub_date
+                else:
+                    pub_time = item.get("providerPublishTime")
+                    if pub_time:
+                        published_at = datetime.fromtimestamp(pub_time, tz=timezone.utc).isoformat()
+
+                title = content.get("title") or item.get("title") or ""
+                if not title or not link:
+                    continue
+
+                articles.append({
+                    "uuid": uid,
+                    "title": title,
+                    "link": link,
+                    "publisher": publisher,
+                    "published_at": published_at,
+                    "thumbnail": thumbnail,
+                    "ticker": ticker.upper(),
+                })
+        except Exception as e:
+            print(f"Error fetching news for {ticker}: {e}")
+    return articles
 
 
 def is_market_open() -> bool:
