@@ -1,8 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sqlalchemy import text
-from models import db, Stock, Property, PortfolioSnapshot
-from services.stock_service import fetch_stock_data, fetch_batch_prices, fetch_batch_extended_info, fetch_news_for_tickers, is_market_open
+from models import db, Stock, Property, PortfolioSnapshot, Option
+from services.stock_service import fetch_stock_data, fetch_batch_prices, fetch_batch_extended_info, is_market_open
+from services.options_service import (
+    fetch_option_data, fetch_batch_option_prices,
+    get_option_expirations, get_option_strikes,
+)
 from services.redfin_service import get_property_data, get_property_data_from_url, scrape_redfin_estimate
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timezone, timedelta
@@ -39,6 +43,18 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
+        # Migration: add is_cash flag for plain cash entries
+        try:
+            db.session.execute(text("ALTER TABLE stocks ADD COLUMN is_cash BOOLEAN DEFAULT 0"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        # Migration: add options_value to snapshots
+        try:
+            db.session.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN options_value REAL DEFAULT 0"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
         for col in [
             "previous_close REAL DEFAULT 0",
             "dividend_yield REAL DEFAULT 0",
@@ -54,12 +70,17 @@ with app.app_context():
 
 
 # ---------------------------------------------------------------------------
-# Background scheduler: update stock prices every 5 seconds during market hours
+# Background scheduler: update stock prices every 15 seconds during market hours
 # ---------------------------------------------------------------------------
 
 def update_all_stock_prices():
+    # Only poll the (free, unofficial) Yahoo Finance endpoint during market
+    # hours to stay well under informal rate limits, especially from a
+    # datacenter IP where blocks are more aggressive.
+    if not is_market_open():
+        return
     with app.app_context():
-        stocks = Stock.query.all()
+        stocks = [s for s in Stock.query.all() if not s.is_cash]
         if not stocks:
             return
         tickers = list({s.ticker.upper() for s in stocks})
@@ -73,10 +94,29 @@ def update_all_stock_prices():
         db.session.commit()
 
 
+def update_all_option_prices():
+    # Same market-hours guard as stock polling to conserve free-tier requests.
+    if not is_market_open():
+        return
+    with app.app_context():
+        options = Option.query.all()
+        if not options:
+            return
+        symbols = list({o.contract_symbol for o in options if o.contract_symbol})
+        prices = fetch_batch_option_prices(symbols)
+        now = datetime.now(timezone.utc)
+        for option in options:
+            new_price = prices.get(option.contract_symbol)
+            if new_price and new_price > 0:
+                option.current_price = new_price
+                option.last_updated = now
+        db.session.commit()
+
+
 def update_extended_info():
     """Refresh previous_close, dividends, and 52-week data (runs less frequently)."""
     with app.app_context():
-        stocks = Stock.query.all()
+        stocks = [s for s in Stock.query.all() if not s.is_cash]
         if not stocks:
             return
         tickers = list({s.ticker.upper() for s in stocks})
@@ -103,9 +143,11 @@ def take_portfolio_snapshot():
     with app.app_context():
         stocks = Stock.query.all()
         properties = Property.query.all()
+        options = Option.query.all()
         stock_value = sum(s.shares * (s.current_price or 0) for s in stocks)
         property_equity = sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
-        total_value = stock_value + property_equity
+        options_value = sum((o.current_price or 0) * 100 * (o.contracts or 0) for o in options)
+        total_value = stock_value + property_equity + options_value
         if total_value <= 0:
             return
         snapshot = PortfolioSnapshot(
@@ -113,13 +155,15 @@ def take_portfolio_snapshot():
             total_value=round(total_value, 2),
             stock_value=round(stock_value, 2),
             property_equity=round(property_equity, 2),
+            options_value=round(options_value, 2),
         )
         db.session.add(snapshot)
         db.session.commit()
 
 
 scheduler = BackgroundScheduler(daemon=True)
-scheduler.add_job(update_all_stock_prices, "interval", seconds=5, id="stock_updater")
+scheduler.add_job(update_all_stock_prices, "interval", seconds=15, id="stock_updater")
+scheduler.add_job(update_all_option_prices, "interval", seconds=15, id="option_updater")
 scheduler.add_job(update_extended_info, "interval", minutes=30, id="extended_info_updater")
 scheduler.add_job(take_portfolio_snapshot, "interval", minutes=30, id="snapshot_recorder")
 scheduler.start()
@@ -139,11 +183,13 @@ with app.app_context():
 def get_portfolio():
     stocks = Stock.query.all()
     properties = Property.query.all()
+    options = Option.query.all()
 
     total_stock_value = sum(s.shares * (s.current_price or 0) for s in stocks)
     total_property_equity = sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
+    total_options_value = sum((o.current_price or 0) * 100 * (o.contracts or 0) for o in options)
 
-    total_value = total_stock_value + total_property_equity
+    total_value = total_stock_value + total_property_equity + total_options_value
 
     # Day change across all stocks
     total_day_change = 0.0
@@ -171,12 +217,14 @@ def get_portfolio():
         "total_value": round(total_value, 2),
         "stock_value": round(total_stock_value, 2),
         "property_equity": round(total_property_equity, 2),
+        "options_value": round(total_options_value, 2),
         "total_day_change": round(total_day_change, 2),
         "total_day_change_pct": total_day_change_pct,
         "total_annual_dividends": round(total_annual_dividends, 2),
         "stock_by_category": {k: round(v, 2) for k, v in stock_by_category.items()},
         "stock_count": len(stocks),
         "property_count": len(properties),
+        "option_count": len(options),
         "market_open": is_market_open(),
     })
 
@@ -205,74 +253,11 @@ def get_portfolio_history():
                 "total_value": s.total_value,
                 "stock_value": s.stock_value,
                 "property_equity": s.property_equity,
+                "options_value": s.options_value or 0,
             }
             for s in snapshots
         ],
     })
-
-
-# ---------------------------------------------------------------------------
-# News (cached)
-# ---------------------------------------------------------------------------
-
-_news_cache = {"articles": [], "fetched_at": None}
-_NEWS_TTL = timedelta(minutes=15)
-
-
-@app.route("/api/news", methods=["GET"])
-def get_news():
-    global _news_cache
-
-    now = datetime.now(timezone.utc)
-    if _news_cache["fetched_at"] and (now - _news_cache["fetched_at"]) < _NEWS_TTL:
-        return jsonify({"articles": _news_cache["articles"]})
-
-    stocks = Stock.query.all()
-    if not stocks:
-        return jsonify({"articles": []})
-
-    ticker_info = {}
-    for s in stocks:
-        t = s.ticker.upper()
-        if t in ticker_info:
-            continue
-        prev = s.previous_close or 0
-        cur = s.current_price or 0
-        pct = round((cur - prev) / prev * 100, 2) if prev else 0
-        ticker_info[t] = {
-            "company_name": s.company_name or t,
-            "day_change_pct": pct,
-        }
-
-    tickers = list(ticker_info.keys())
-    raw_articles = fetch_news_for_tickers(tickers)
-
-    # Group by ticker, keep max 3 per ticker
-    per_ticker = {}
-    for a in raw_articles:
-        t = a["ticker"]
-        if t not in per_ticker:
-            per_ticker[t] = []
-        if len(per_ticker[t]) < 3:
-            info = ticker_info.get(t, {})
-            per_ticker[t].append({
-                **a,
-                "company_name": info.get("company_name", t),
-                "day_change_pct": info.get("day_change_pct", 0),
-            })
-
-    # Sort tickers: most negative first, then most positive
-    sorted_tickers = sorted(
-        per_ticker.keys(),
-        key=lambda t: ticker_info.get(t, {}).get("day_change_pct", 0),
-    )
-
-    articles = []
-    for t in sorted_tickers:
-        articles.extend(per_ticker[t])
-
-    _news_cache = {"articles": articles, "fetched_at": now}
-    return jsonify({"articles": articles})
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +276,27 @@ def get_stocks():
 @app.route("/api/stocks", methods=["POST"])
 def add_stock():
     data = request.get_json()
+    is_cash = bool(data.get("is_cash"))
+
+    if is_cash:
+        label = (data.get("ticker") or data.get("label") or "Cash").strip() or "Cash"
+        amount = float(data.get("amount", data.get("current_price", 0)) or 0)
+        if amount <= 0:
+            return jsonify({"error": "A positive cash amount is required"}), 400
+        stock = Stock(
+            ticker=label,
+            company_name="Cash",
+            shares=1,
+            category="cash_equivalent",
+            is_cash=True,
+            current_price=amount,
+            previous_close=0,
+            last_updated=datetime.now(timezone.utc),
+        )
+        db.session.add(stock)
+        db.session.commit()
+        return jsonify(stock.to_dict()), 201
+
     ticker = data.get("ticker", "").strip().upper()
     shares = float(data.get("shares", 0))
     category = (data.get("category") or "individual").lower()
@@ -324,6 +330,17 @@ def add_stock():
 def update_stock(stock_id):
     stock = Stock.query.get_or_404(stock_id)
     data = request.get_json()
+
+    if stock.is_cash:
+        if "ticker" in data or "label" in data:
+            label = (data.get("ticker") or data.get("label") or stock.ticker).strip()
+            if label:
+                stock.ticker = label
+        if "amount" in data or "current_price" in data:
+            stock.current_price = float(data.get("amount", data.get("current_price")) or 0)
+        stock.last_updated = datetime.now(timezone.utc)
+        db.session.commit()
+        return jsonify(stock.to_dict())
 
     if "shares" in data:
         stock.shares = float(data["shares"])
@@ -360,6 +377,8 @@ def delete_stock(stock_id):
 @app.route("/api/stocks/<int:stock_id>/refresh", methods=["POST"])
 def refresh_stock(stock_id):
     stock = Stock.query.get_or_404(stock_id)
+    if stock.is_cash:
+        return jsonify(stock.to_dict())
     data = fetch_stock_data(stock.ticker)
     stock.current_price = data["current_price"]
     stock.company_name = data.get("company_name") or stock.company_name
@@ -371,6 +390,104 @@ def refresh_stock(stock_id):
     stock.last_updated = datetime.now(timezone.utc)
     db.session.commit()
     return jsonify(stock.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Options CRUD
+# ---------------------------------------------------------------------------
+
+@app.route("/api/options", methods=["GET"])
+def get_options():
+    options = Option.query.order_by(Option.underlying_ticker, Option.expiration).all()
+    return jsonify({
+        "options": [o.to_dict() for o in options],
+        "market_open": is_market_open(),
+    })
+
+
+@app.route("/api/options/chain", methods=["GET"])
+def get_options_chain():
+    ticker = request.args.get("ticker", "").strip().upper()
+    expiration = request.args.get("expiration", "").strip()
+    if not ticker:
+        return jsonify({"error": "Ticker is required"}), 400
+    if expiration:
+        return jsonify({"ticker": ticker, "expiration": expiration, **get_option_strikes(ticker, expiration)})
+    return jsonify({"ticker": ticker, "expirations": get_option_expirations(ticker)})
+
+
+@app.route("/api/options", methods=["POST"])
+def add_option():
+    data = request.get_json()
+    ticker = (data.get("underlying_ticker") or data.get("ticker") or "").strip().upper()
+    option_type = (data.get("option_type") or "call").lower()
+    if option_type not in ("call", "put"):
+        option_type = "call"
+    expiration = (data.get("expiration") or "").strip()
+    try:
+        strike = float(data.get("strike", 0))
+        contracts = int(data.get("contracts", 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid strike or contracts"}), 400
+
+    if not ticker or not expiration or strike <= 0 or contracts == 0:
+        return jsonify({"error": "Ticker, expiration, positive strike, and contracts are required"}), 400
+
+    info = fetch_option_data(ticker, expiration, strike, option_type)
+
+    option = Option(
+        underlying_ticker=ticker,
+        underlying_name=info.get("underlying_name", ticker),
+        option_type=option_type,
+        strike=strike,
+        expiration=expiration,
+        contracts=contracts,
+        contract_symbol=info.get("contract_symbol", ""),
+        current_price=info.get("current_price", 0),
+        last_updated=datetime.now(timezone.utc),
+    )
+    db.session.add(option)
+    db.session.commit()
+    return jsonify(option.to_dict()), 201
+
+
+@app.route("/api/options/<int:option_id>", methods=["PUT"])
+def update_option(option_id):
+    option = Option.query.get_or_404(option_id)
+    data = request.get_json()
+
+    if "contracts" in data:
+        try:
+            option.contracts = int(data["contracts"])
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid contracts"}), 400
+
+    option.last_updated = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify(option.to_dict())
+
+
+@app.route("/api/options/<int:option_id>", methods=["DELETE"])
+def delete_option(option_id):
+    option = Option.query.get_or_404(option_id)
+    db.session.delete(option)
+    db.session.commit()
+    return jsonify({"message": "Option deleted"}), 200
+
+
+@app.route("/api/options/<int:option_id>/refresh", methods=["POST"])
+def refresh_option(option_id):
+    option = Option.query.get_or_404(option_id)
+    info = fetch_option_data(option.underlying_ticker, option.expiration, option.strike, option.option_type)
+    if info.get("current_price"):
+        option.current_price = info["current_price"]
+    if info.get("contract_symbol"):
+        option.contract_symbol = info["contract_symbol"]
+    if info.get("underlying_name"):
+        option.underlying_name = info["underlying_name"]
+    option.last_updated = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify(option.to_dict())
 
 
 # ---------------------------------------------------------------------------

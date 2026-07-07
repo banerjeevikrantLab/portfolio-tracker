@@ -12,8 +12,10 @@ export default function Dashboard({ portfolio }) {
     total_value,
     stock_value,
     property_equity,
+    options_value,
     stock_count,
     property_count,
+    option_count,
     market_open,
     total_day_change,
     total_day_change_pct,
@@ -31,7 +33,7 @@ export default function Dashboard({ portfolio }) {
         </span>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <p className="text-sm text-gray-400 mb-1">Total Portfolio Value</p>
           <p className="text-3xl font-bold">{formatCurrency(total_value)}</p>
@@ -40,15 +42,22 @@ export default function Dashboard({ portfolio }) {
           </p>
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <p className="text-sm text-gray-400 mb-1">Stocks ({stock_count})</p>
-          <p className="text-2xl font-bold">{formatCurrency(stock_value)}</p>
-        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <p className="text-sm text-gray-400 mb-1">Stocks ({stock_count})</p>
+            <p className="text-2xl font-bold">{formatCurrency(stock_value)}</p>
+          </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <p className="text-sm text-gray-400 mb-1">Real Estate ({property_count})</p>
-          <p className="text-2xl font-bold">{formatCurrency(property_equity)}</p>
-          <p className="text-xs text-gray-500 mt-1">Equity (value − mortgage)</p>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <p className="text-sm text-gray-400 mb-1">Options ({option_count ?? 0})</p>
+            <p className="text-2xl font-bold">{formatCurrency(options_value)}</p>
+          </div>
+
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <p className="text-sm text-gray-400 mb-1">Real Estate ({property_count})</p>
+            <p className="text-2xl font-bold">{formatCurrency(property_equity)}</p>
+            <p className="text-xs text-gray-500 mt-1">Equity (value − mortgage)</p>
+          </div>
         </div>
       </div>
 

@@ -6,18 +6,20 @@ const CATEGORY_COLORS = {
   individual: 'bg-blue-500',
   diversified: 'bg-emerald-500',
   cash_equivalent: 'bg-amber-500',
+  options: 'bg-pink-500',
   real_estate: 'bg-violet-500',
 };
 
 export default function PortfolioDistributionChart({ portfolio }) {
   if (!portfolio) return null;
 
-  const { stock_by_category = {}, stock_value, property_equity, total_value } = portfolio;
+  const { stock_by_category = {}, property_equity, options_value, total_value } = portfolio;
 
   const segments = [
     { key: 'individual', value: stock_by_category.individual || 0, label: 'Individual' },
     { key: 'diversified', value: stock_by_category.diversified || 0, label: 'Diversified' },
     { key: 'cash_equivalent', value: stock_by_category.cash_equivalent || 0, label: 'Cash Equivalent' },
+    { key: 'options', value: options_value || 0, label: 'Options' },
     { key: 'real_estate', value: property_equity || 0, label: 'Real Estate' },
   ].filter(s => s.value > 0);
 

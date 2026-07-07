@@ -37,11 +37,12 @@ function RangeBar({ low, high, current }) {
   );
 }
 
-function StockList({ stocks, totalValue, onUpdate, onDelete, onRefresh, setEditingStock, setShowModal }) {
+function StockList({ stocks, totalValue, portfolioTotal, onUpdate, onDelete, onRefresh, setEditingStock, setShowModal }) {
   if (stocks.length === 0) return null;
 
   const sorted = [...stocks].sort((a, b) => (b.market_value || 0) - (a.market_value || 0));
   const showPct = totalValue != null && totalValue > 0;
+  const showPortfolioPct = portfolioTotal != null && portfolioTotal > 0;
 
   return (
     <div className="overflow-x-auto">
@@ -54,7 +55,8 @@ function StockList({ stocks, totalValue, onUpdate, onDelete, onRefresh, setEditi
             <th className="pb-3 pr-4 font-medium text-right">Price</th>
             <th className="pb-3 pr-4 font-medium text-right">Day Change</th>
             <th className="pb-3 pr-4 font-medium text-right">Market Value</th>
-            {showPct && <th className="pb-3 pr-4 font-medium text-right">%</th>}
+            {showPct && <th className="pb-3 pr-4 font-medium text-right" title="Percent of category">% Cat</th>}
+            {showPortfolioPct && <th className="pb-3 pr-4 font-medium text-right" title="Percent of total portfolio">% Port</th>}
             <th className="pb-3 pr-4 font-medium text-right">Div Yield</th>
             <th className="pb-3 pr-3 font-medium">52W Range</th>
             <th className="pb-3 pr-4 font-medium text-right">Updated</th>
@@ -64,23 +66,26 @@ function StockList({ stocks, totalValue, onUpdate, onDelete, onRefresh, setEditi
         <tbody>
           {sorted.map(s => {
             const pct = showPct ? ((s.market_value || 0) / totalValue * 100) : null;
+            const portPct = showPortfolioPct ? ((s.market_value || 0) / portfolioTotal * 100) : null;
             const changeColor = s.day_change > 0 ? 'text-emerald-400' : s.day_change < 0 ? 'text-red-400' : 'text-gray-400';
+            const isCash = s.is_cash;
             return (
             <tr key={s.id} className="border-b border-gray-800/50 hover:bg-gray-900/50 transition">
               <td className="py-3 pr-4 font-mono font-bold text-blue-400">{s.ticker}</td>
-              <td className="py-3 pr-4 text-gray-300 max-w-[200px] truncate">{s.company_name}</td>
-              <td className="py-3 pr-4 text-right tabular-nums">{s.shares}</td>
-              <td className="py-3 pr-4 text-right tabular-nums font-medium">{formatCurrency(s.current_price)}</td>
+              <td className="py-3 pr-4 text-gray-300 max-w-[200px] truncate">{isCash ? 'Cash' : s.company_name}</td>
+              <td className="py-3 pr-4 text-right tabular-nums">{isCash ? '—' : s.shares}</td>
+              <td className="py-3 pr-4 text-right tabular-nums font-medium">{isCash ? '—' : formatCurrency(s.current_price)}</td>
               <td className={`py-3 pr-4 text-right tabular-nums text-xs font-medium ${changeColor}`}>
-                {formatChange(s.day_change, s.day_change_pct)}
+                {isCash ? '—' : formatChange(s.day_change, s.day_change_pct)}
               </td>
               <td className="py-3 pr-4 text-right tabular-nums font-medium">{formatCurrency(s.market_value)}</td>
               {showPct && <td className="py-3 pr-4 text-right tabular-nums text-gray-400">{pct.toFixed(1)}%</td>}
+              {showPortfolioPct && <td className="py-3 pr-4 text-right tabular-nums text-gray-400">{portPct.toFixed(1)}%</td>}
               <td className="py-3 pr-4 text-right tabular-nums text-gray-400">
-                {s.dividend_yield ? `${s.dividend_yield.toFixed(2)}%` : '—'}
+                {isCash ? '—' : (s.dividend_yield ? `${s.dividend_yield.toFixed(2)}%` : '—')}
               </td>
               <td className="py-3 pr-3">
-                <RangeBar low={s.week52_low} high={s.week52_high} current={s.current_price} />
+                {isCash ? <span className="text-gray-600">—</span> : <RangeBar low={s.week52_low} high={s.week52_high} current={s.current_price} />}
               </td>
               <td className="py-3 pr-4 text-right text-xs text-gray-500">{formatTime(s.last_updated)}</td>
               <td className="py-3 flex gap-2">
@@ -93,7 +98,7 @@ function StockList({ stocks, totalValue, onUpdate, onDelete, onRefresh, setEditi
                     Edit
                   </button>
                 )}
-                {onRefresh && (
+                {onRefresh && !isCash && (
                   <button
                     onClick={() => onRefresh(s.id)}
                     className="text-gray-500 hover:text-blue-400 transition text-xs"
@@ -119,7 +124,7 @@ function StockList({ stocks, totalValue, onUpdate, onDelete, onRefresh, setEditi
   );
 }
 
-export default function StockTable({ stocks, marketOpen, onAdd, onUpdate, onDelete, onRefresh }) {
+export default function StockTable({ stocks, marketOpen, portfolioTotal, onAdd, onUpdate, onDelete, onRefresh }) {
   const [showModal, setShowModal] = useState(false);
   const [editingStock, setEditingStock] = useState(null);
 
@@ -162,6 +167,7 @@ export default function StockTable({ stocks, marketOpen, onAdd, onUpdate, onDele
                 <StockList
                   stocks={individualStocks}
                   totalValue={individualStocks.reduce((sum, s) => sum + (s.market_value || 0), 0)}
+                  portfolioTotal={portfolioTotal}
                   onUpdate={onUpdate}
                   onDelete={onDelete}
                   onRefresh={onRefresh}
@@ -180,6 +186,8 @@ export default function StockTable({ stocks, marketOpen, onAdd, onUpdate, onDele
               <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden p-4">
                 <StockList
                   stocks={diversifiedAndCash}
+                  totalValue={diversifiedAndCash.reduce((sum, s) => sum + (s.market_value || 0), 0)}
+                  portfolioTotal={portfolioTotal}
                   onUpdate={onUpdate}
                   onDelete={onDelete}
                   onRefresh={onRefresh}

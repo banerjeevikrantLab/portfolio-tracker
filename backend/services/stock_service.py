@@ -1,5 +1,22 @@
 import yfinance as yf
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+
+def _trailing_12m_dividend(ticker_obj) -> float:
+    """Sum dividends paid in the trailing 12 months. Used as a fallback for
+    ETFs (e.g. SGOV) where yfinance's info dict often omits dividendRate."""
+    try:
+        divs = ticker_obj.dividends
+        if divs is None or len(divs) == 0:
+            return 0.0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=365)
+        idx = divs.index
+        if getattr(idx, "tz", None) is None:
+            cutoff = cutoff.replace(tzinfo=None)
+        recent = divs[idx >= cutoff]
+        return float(recent.sum()) if len(recent) else 0.0
+    except Exception:
+        return 0.0
 
 # Use curl_cffi to bypass Yahoo's TLS fingerprinting / bot protection
 def _get_session():
@@ -87,6 +104,12 @@ def fetch_stock_data(ticker: str) -> dict:
         result["company_name"] = info.get("shortName") or info.get("longName") or ticker.upper()
         result["previous_close"] = round(float(info.get("previousClose") or info.get("regularMarketPreviousClose") or 0), 2)
         div_info = _extract_dividend_info(info)
+        if div_info["annual_dividend"] <= 0:
+            ttm = _trailing_12m_dividend(t)
+            if ttm > 0:
+                div_info["annual_dividend"] = round(ttm, 4)
+                if div_info["dividend_yield"] <= 0 and current_price > 0:
+                    div_info["dividend_yield"] = round(ttm / current_price * 100, 2)
         result["dividend_yield"] = div_info["dividend_yield"]
         result["annual_dividend"] = div_info["annual_dividend"]
         result["week52_high"] = round(float(info.get("fiftyTwoWeekHigh") or 0), 2)
@@ -167,8 +190,15 @@ def fetch_batch_extended_info(tickers: list[str]) -> dict[str, dict]:
         try:
             t = yf.Ticker(ticker, session=session)
             info = t.info or {}
-            entry["previous_close"] = round(float(info.get("previousClose") or info.get("regularMarketPreviousClose") or 0), 2)
+            prev_close = round(float(info.get("previousClose") or info.get("regularMarketPreviousClose") or 0), 2)
+            entry["previous_close"] = prev_close
             div_info = _extract_dividend_info(info)
+            if div_info["annual_dividend"] <= 0:
+                ttm = _trailing_12m_dividend(t)
+                if ttm > 0:
+                    div_info["annual_dividend"] = round(ttm, 4)
+                    if div_info["dividend_yield"] <= 0 and prev_close > 0:
+                        div_info["dividend_yield"] = round(ttm / prev_close * 100, 2)
             entry["dividend_yield"] = div_info["dividend_yield"]
             entry["annual_dividend"] = div_info["annual_dividend"]
             entry["week52_high"] = round(float(info.get("fiftyTwoWeekHigh") or 0), 2)
@@ -177,81 +207,6 @@ def fetch_batch_extended_info(tickers: list[str]) -> dict[str, dict]:
             print(f"Error fetching extended info for {ticker}: {e}")
         results[ticker] = entry
     return results
-
-
-def fetch_news_for_tickers(tickers: list[str]) -> list[dict]:
-    """Fetch recent news articles for multiple tickers via yfinance."""
-    if not tickers:
-        return []
-    session = _get_session()
-    seen_ids = set()
-    articles = []
-    for ticker in tickers:
-        try:
-            t = yf.Ticker(ticker, session=session)
-            news = t.news or []
-            for item in news:
-                content = item.get("content") or item
-                uid = content.get("id") or item.get("id") or item.get("uuid") or ""
-                if not uid or uid in seen_ids:
-                    continue
-                seen_ids.add(uid)
-
-                # Extract link from nested canonicalUrl or clickThroughUrl
-                link = ""
-                for url_key in ("canonicalUrl", "clickThroughUrl"):
-                    url_obj = content.get(url_key)
-                    if isinstance(url_obj, dict) and url_obj.get("url"):
-                        link = url_obj["url"]
-                        break
-                    elif isinstance(url_obj, str) and url_obj:
-                        link = url_obj
-                        break
-                if not link:
-                    link = content.get("link") or item.get("link") or ""
-
-                # Extract publisher from nested provider
-                publisher = ""
-                provider = content.get("provider")
-                if isinstance(provider, dict):
-                    publisher = provider.get("displayName") or ""
-                if not publisher:
-                    publisher = content.get("publisher") or item.get("publisher") or ""
-
-                # Extract thumbnail
-                thumbnail = ""
-                thumb_data = content.get("thumbnail") or item.get("thumbnail")
-                if isinstance(thumb_data, dict):
-                    resolutions = thumb_data.get("resolutions") or []
-                    if resolutions:
-                        thumbnail = resolutions[-1].get("url", "")
-
-                # Extract publish date (ISO string or unix timestamp)
-                published_at = ""
-                pub_date = content.get("pubDate") or ""
-                if pub_date:
-                    published_at = pub_date
-                else:
-                    pub_time = item.get("providerPublishTime")
-                    if pub_time:
-                        published_at = datetime.fromtimestamp(pub_time, tz=timezone.utc).isoformat()
-
-                title = content.get("title") or item.get("title") or ""
-                if not title or not link:
-                    continue
-
-                articles.append({
-                    "uuid": uid,
-                    "title": title,
-                    "link": link,
-                    "publisher": publisher,
-                    "published_at": published_at,
-                    "thumbnail": thumbnail,
-                    "ticker": ticker.upper(),
-                })
-        except Exception as e:
-            print(f"Error fetching news for {ticker}: {e}")
-    return articles
 
 
 def is_market_open() -> bool:

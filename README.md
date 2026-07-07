@@ -1,6 +1,6 @@
 # Portfolio Tracker
 
-A full-stack portfolio tracker for stocks and real estate. Stocks update live every 5 seconds during market hours via Yahoo Finance. Real estate values are fetched from Redfin on demand.
+A full-stack portfolio tracker for stocks and real estate. Stocks update live every 15 seconds during market hours via Yahoo Finance. Real estate values are fetched from Redfin on demand.
 
 ## Prerequisites
 
@@ -88,7 +88,7 @@ python app.py
 
 ## Features
 
-- **Stock Portfolio**: Add stocks by ticker symbol. Prices update every 5 seconds during US market hours (9:30 AM - 4:00 PM ET).
+- **Stock Portfolio**: Add stocks by ticker symbol. Prices update every 15 seconds during US market hours (9:30 AM - 4:00 PM ET).
 - **Real Estate Portfolio**: Add properties by address. Redfin estimates are fetched automatically.
 - **Dashboard**: Total portfolio value with gain/loss breakdown for stocks and real estate.
 

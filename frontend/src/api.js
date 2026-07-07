@@ -33,6 +33,37 @@ export async function refreshStock(id) {
   return data;
 }
 
+export async function getOptions() {
+  const { data } = await api.get('/options');
+  return data;
+}
+
+export async function getOptionChain(ticker, expiration) {
+  const params = new URLSearchParams({ ticker });
+  if (expiration) params.append('expiration', expiration);
+  const { data } = await api.get(`/options/chain?${params.toString()}`);
+  return data;
+}
+
+export async function addOption(option) {
+  const { data } = await api.post('/options', option);
+  return data;
+}
+
+export async function updateOption(id, option) {
+  const { data } = await api.put(`/options/${id}`, option);
+  return data;
+}
+
+export async function deleteOption(id) {
+  await api.delete(`/options/${id}`);
+}
+
+export async function refreshOption(id) {
+  const { data } = await api.post(`/options/${id}/refresh`);
+  return data;
+}
+
 export async function getProperties() {
   const { data } = await api.get('/properties');
   return data;
@@ -60,10 +91,5 @@ export async function refreshProperty(id) {
 
 export async function getPortfolioHistory(period = '1M') {
   const { data } = await api.get(`/portfolio/history?period=${period}`);
-  return data;
-}
-
-export async function getNews() {
-  const { data } = await api.get('/news');
   return data;
 }

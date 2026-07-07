@@ -15,6 +15,7 @@ class Stock(db.Model):
     company_name = db.Column(db.String(200), default="")
     shares = db.Column(db.Float, nullable=False)
     category = db.Column(db.String(30), default="individual")  # individual, diversified, cash_equivalent
+    is_cash = db.Column(db.Boolean, default=False)  # plain cash entry (no ticker/price lookup)
     avg_cost = db.Column(db.Float, nullable=True, default=0)  # kept for DB compat, not displayed
     current_price = db.Column(db.Float, default=0.0)
     previous_close = db.Column(db.Float, default=0.0)
@@ -38,6 +39,7 @@ class Stock(db.Model):
             "company_name": self.company_name,
             "shares": self.shares,
             "category": self.category or "individual",
+            "is_cash": bool(self.is_cash),
             "current_price": self.current_price,
             "previous_close": prev,
             "day_change": day_change,
@@ -47,6 +49,40 @@ class Stock(db.Model):
             "annual_dividend": self.annual_dividend or 0,
             "week52_high": self.week52_high or 0,
             "week52_low": self.week52_low or 0,
+            "last_updated": self.last_updated.isoformat() if self.last_updated else None,
+        }
+
+
+class Option(db.Model):
+    __tablename__ = "options"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    underlying_ticker = db.Column(db.String(10), nullable=False)
+    underlying_name = db.Column(db.String(200), default="")
+    option_type = db.Column(db.String(4), default="call")  # call, put
+    strike = db.Column(db.Float, nullable=False)
+    expiration = db.Column(db.String(10), nullable=False)  # YYYY-MM-DD
+    contracts = db.Column(db.Integer, nullable=False, default=1)
+    contract_symbol = db.Column(db.String(40), default="")  # OCC symbol
+    current_price = db.Column(db.Float, default=0.0)  # per-share premium
+    last_updated = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+    def to_dict(self):
+        # Standard equity option multiplier of 100 shares per contract
+        market_value = (self.current_price or 0) * 100 * (self.contracts or 0)
+        return {
+            "id": self.id,
+            "underlying_ticker": self.underlying_ticker,
+            "underlying_name": self.underlying_name,
+            "option_type": self.option_type or "call",
+            "strike": self.strike,
+            "expiration": self.expiration,
+            "contracts": self.contracts,
+            "contract_symbol": self.contract_symbol,
+            "current_price": self.current_price or 0,
+            "market_value": round(market_value, 2),
             "last_updated": self.last_updated.isoformat() if self.last_updated else None,
         }
 
@@ -90,3 +126,4 @@ class PortfolioSnapshot(db.Model):
     total_value = db.Column(db.Float, default=0.0)
     stock_value = db.Column(db.Float, default=0.0)
     property_equity = db.Column(db.Float, default=0.0)
+    options_value = db.Column(db.Float, default=0.0)
