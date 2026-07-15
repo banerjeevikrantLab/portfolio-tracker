@@ -53,8 +53,8 @@ export async function getStocks(view) {
   return data;
 }
 
-export async function addStock(stock) {
-  const { data } = await api.post('/stocks', stock);
+export async function addStock(stock, view) {
+  const { data } = await api.post('/stocks', stock, { params: viewParams(view) });
   return data;
 }
 
@@ -84,8 +84,8 @@ export async function getOptionChain(ticker, expiration) {
   return data;
 }
 
-export async function addOption(option) {
-  const { data } = await api.post('/options', option);
+export async function addOption(option, view) {
+  const { data } = await api.post('/options', option, { params: viewParams(view) });
   return data;
 }
 
@@ -108,8 +108,8 @@ export async function getProperties(view) {
   return data;
 }
 
-export async function addProperty(property) {
-  const { data } = await api.post('/properties', property);
+export async function addProperty(property, view) {
+  const { data } = await api.post('/properties', property, { params: viewParams(view) });
   return data;
 }
 

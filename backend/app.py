@@ -268,17 +268,43 @@ def root_required(fn):
 def resolve_view():
     """Determine which portfolio to read and whether to mask dollar values.
 
-    Returns (owner_id, masked, current_user). Data is masked unless the
-    authenticated user is viewing their OWN portfolio.
+    Returns (owner_id, masked, current_user). Any authenticated user may see
+    real dollar values (including when viewing the root portfolio); values are
+    only masked for anonymous (logged-out) visitors. The root user may also
+    target any account by passing its numeric id as the view.
     """
     current = get_current_user()
     view = (request.args.get("view") or "root").lower()
     if view == "self" and current:
         return current.id, False, current
+    # Root can inspect any account (e.g. a private account) by its id.
+    if current and current.role == "root" and view.isdigit():
+        target = db.session.get(User, int(view))
+        if target:
+            return target.id, False, current
     root = get_root_user()
     owner_id = root.id if root else None
-    masked = current is None or owner_id is None or current.id != owner_id
+    masked = current is None or owner_id is None
     return owner_id, masked, current
+
+
+def resolve_write_owner():
+    """Resolve which account a create/write should target, and authorize it.
+
+    Returns (owner_id, current_user, error_response). Private users can only
+    write to their own portfolio; the root user may target any account by
+    passing its numeric id as the view.
+    """
+    current = get_current_user()
+    if not current:
+        return None, None, (jsonify({"error": "Authentication required"}), 401)
+    view = (request.args.get("view") or "").lower()
+    if current.role == "root" and view.isdigit():
+        target = db.session.get(User, int(view))
+        if not target:
+            return None, None, (jsonify({"error": "Account not found"}), 404)
+        return target.id, current, None
+    return current.id, current, None
 
 
 # ---------------------------------------------------------------------------
@@ -489,9 +515,10 @@ def get_stocks():
 
 
 @app.route("/api/stocks", methods=["POST"])
-@login_required
 def add_stock():
-    owner_id = request.current_user.id
+    owner_id, _, err = resolve_write_owner()
+    if err:
+        return err
     data = request.get_json()
     is_cash = bool(data.get("is_cash"))
 
@@ -546,14 +573,18 @@ def add_stock():
 
 
 def _get_owned_or_error(model, obj_id):
-    """Fetch a row that belongs to the authenticated user, or an error response."""
+    """Fetch a row the authenticated user may modify, or an error response.
+
+    A private user may only modify their own rows; the root user may modify
+    any account's rows.
+    """
     user = get_current_user()
     if not user:
         return None, (jsonify({"error": "Authentication required"}), 401)
     obj = db.session.get(model, obj_id)
     if not obj:
         return None, (jsonify({"error": "Not found"}), 404)
-    if obj.owner_id != user.id:
+    if user.role != "root" and obj.owner_id != user.id:
         return None, (jsonify({"error": "You can only modify your own portfolio"}), 403)
     return obj, None
 
@@ -675,9 +706,10 @@ def get_options_chain():
 
 
 @app.route("/api/options", methods=["POST"])
-@login_required
 def add_option():
-    owner_id = request.current_user.id
+    owner_id, _, err = resolve_write_owner()
+    if err:
+        return err
     data = request.get_json()
     ticker = (data.get("underlying_ticker") or data.get("ticker") or "").strip().upper()
     option_type = (data.get("option_type") or "call").lower()
@@ -785,9 +817,10 @@ def get_properties():
 
 
 @app.route("/api/properties", methods=["POST"])
-@login_required
 def add_property():
-    owner_id = request.current_user.id
+    owner_id, _, err = resolve_write_owner()
+    if err:
+        return err
     data = request.get_json()
     address = data.get("address", "").strip()
     redfin_url = data.get("redfin_url", "").strip()
