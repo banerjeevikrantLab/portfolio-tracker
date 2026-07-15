@@ -32,22 +32,38 @@ function CustomTooltip({ active, payload, label, period }) {
   );
 }
 
-export default function PortfolioHistoryChart() {
+export default function PortfolioHistoryChart({ view = 'root', masked = false }) {
   const [period, setPeriod] = useState('1M');
   const [snapshots, setSnapshots] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (masked) {
+      setSnapshots([]);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
-    getPortfolioHistory(period)
+    getPortfolioHistory(period, view)
       .then(data => {
         if (!cancelled) setSnapshots(data.snapshots || []);
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [period]);
+  }, [period, view, masked]);
+
+  if (masked) {
+    return (
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-sm font-medium text-gray-400 mb-4">Portfolio History</h3>
+        <div className="h-48 flex items-center justify-center text-gray-600 text-sm">
+          Sign in to this portfolio to view its history.
+        </div>
+      </div>
+    );
+  }
 
   if (loading && snapshots.length === 0) {
     return (

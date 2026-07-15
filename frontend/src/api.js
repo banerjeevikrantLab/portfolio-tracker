@@ -1,16 +1,55 @@
 import axios from 'axios';
+import { getToken } from './auth';
 
 const api = axios.create({
   baseURL: '/api',
 });
 
-export async function getPortfolio() {
-  const { data } = await api.get('/portfolio');
+// Attach the auth token (if any) to every request.
+api.interceptors.request.use((config) => {
+  const token = getToken();
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+function viewParams(view) {
+  return view ? { view } : {};
+}
+
+// --- Auth ---------------------------------------------------------------
+
+export async function login(username, password) {
+  const { data } = await api.post('/auth/login', { username, password });
   return data;
 }
 
-export async function getStocks() {
-  const { data } = await api.get('/stocks');
+export async function getMe() {
+  const { data } = await api.get('/auth/me');
+  return data;
+}
+
+export async function listUsers() {
+  const { data } = await api.get('/users');
+  return data;
+}
+
+export async function createUser(username, password) {
+  const { data } = await api.post('/users', { username, password });
+  return data;
+}
+
+// --- Portfolio data -----------------------------------------------------
+
+export async function getPortfolio(view) {
+  const { data } = await api.get('/portfolio', { params: viewParams(view) });
+  return data;
+}
+
+export async function getStocks(view) {
+  const { data } = await api.get('/stocks', { params: viewParams(view) });
   return data;
 }
 
@@ -33,8 +72,8 @@ export async function refreshStock(id) {
   return data;
 }
 
-export async function getOptions() {
-  const { data } = await api.get('/options');
+export async function getOptions(view) {
+  const { data } = await api.get('/options', { params: viewParams(view) });
   return data;
 }
 
@@ -64,8 +103,8 @@ export async function refreshOption(id) {
   return data;
 }
 
-export async function getProperties() {
-  const { data } = await api.get('/properties');
+export async function getProperties(view) {
+  const { data } = await api.get('/properties', { params: viewParams(view) });
   return data;
 }
 
@@ -89,7 +128,7 @@ export async function refreshProperty(id) {
   return data;
 }
 
-export async function getPortfolioHistory(period = '1M') {
-  const { data } = await api.get(`/portfolio/history?period=${period}`);
+export async function getPortfolioHistory(period = '1M', view) {
+  const { data } = await api.get('/portfolio/history', { params: { period, ...viewParams(view) } });
   return data;
 }

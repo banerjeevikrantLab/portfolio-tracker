@@ -5,7 +5,14 @@ function formatCurrency(val) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val || 0);
 }
 
-export default function Dashboard({ portfolio }) {
+const MASK = '••••';
+
+function MaskedValue({ masked, value }) {
+  if (masked) return <span className="text-gray-600">{MASK}</span>;
+  return <>{formatCurrency(value)}</>;
+}
+
+export default function Dashboard({ portfolio, masked = false, view = 'root' }) {
   if (!portfolio) return null;
 
   const {
@@ -21,8 +28,8 @@ export default function Dashboard({ portfolio }) {
     total_day_change_pct,
   } = portfolio;
 
-  const dayChangeColor = total_day_change > 0 ? 'text-emerald-400' : total_day_change < 0 ? 'text-red-400' : 'text-gray-400';
-  const dayChangeSign = total_day_change >= 0 ? '+' : '';
+  const dayChangeColor = total_day_change_pct > 0 ? 'text-emerald-400' : total_day_change_pct < 0 ? 'text-red-400' : 'text-gray-400';
+  const dayChangeSign = (total_day_change_pct ?? 0) >= 0 ? '+' : '';
 
   return (
     <div className="mb-8">
@@ -36,37 +43,39 @@ export default function Dashboard({ portfolio }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <p className="text-sm text-gray-400 mb-1">Total Portfolio Value</p>
-          <p className="text-3xl font-bold">{formatCurrency(total_value)}</p>
+          <p className="text-3xl font-bold"><MaskedValue masked={masked} value={total_value} /></p>
           <p className={`text-sm mt-2 font-medium ${dayChangeColor}`}>
-            {dayChangeSign}{formatCurrency(Math.abs(total_day_change))} ({dayChangeSign}{total_day_change_pct?.toFixed(2) ?? '0.00'}%) today
+            {masked
+              ? `${dayChangeSign}${total_day_change_pct?.toFixed(2) ?? '0.00'}% today`
+              : `${dayChangeSign}${formatCurrency(Math.abs(total_day_change))} (${dayChangeSign}${total_day_change_pct?.toFixed(2) ?? '0.00'}%) today`}
           </p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <p className="text-sm text-gray-400 mb-1">Stocks ({stock_count})</p>
-            <p className="text-2xl font-bold">{formatCurrency(stock_value)}</p>
+            <p className="text-2xl font-bold"><MaskedValue masked={masked} value={stock_value} /></p>
           </div>
 
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <p className="text-sm text-gray-400 mb-1">Options ({option_count ?? 0})</p>
-            <p className="text-2xl font-bold">{formatCurrency(options_value)}</p>
+            <p className="text-2xl font-bold"><MaskedValue masked={masked} value={options_value} /></p>
           </div>
 
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <p className="text-sm text-gray-400 mb-1">Real Estate ({property_count})</p>
-            <p className="text-2xl font-bold">{formatCurrency(property_equity)}</p>
+            <p className="text-2xl font-bold"><MaskedValue masked={masked} value={property_equity} /></p>
             <p className="text-xs text-gray-500 mt-1">Equity (value − mortgage)</p>
           </div>
         </div>
       </div>
 
       <div className="mt-6">
-        <PortfolioHistoryChart />
+        <PortfolioHistoryChart view={view} masked={masked} />
       </div>
 
       <div className="mt-6">
-        <PortfolioDistributionChart portfolio={portfolio} />
+        <PortfolioDistributionChart portfolio={portfolio} masked={masked} />
       </div>
     </div>
   );

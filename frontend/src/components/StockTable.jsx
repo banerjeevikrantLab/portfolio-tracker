@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import AddStockModal from './AddStockModal';
 
+const MASK = '••••';
+
 function formatCurrency(val) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val || 0);
 }
@@ -37,12 +39,14 @@ function RangeBar({ low, high, current }) {
   );
 }
 
-function StockList({ stocks, totalValue, portfolioTotal, onUpdate, onDelete, onRefresh, setEditingStock, setShowModal }) {
+function Masked() {
+  return <span className="text-gray-600">{MASK}</span>;
+}
+
+function StockList({ stocks, masked, canEdit, onUpdate, onDelete, onRefresh, setEditingStock, setShowModal }) {
   if (stocks.length === 0) return null;
 
-  const sorted = [...stocks].sort((a, b) => (b.market_value || 0) - (a.market_value || 0));
-  const showPct = totalValue != null && totalValue > 0;
-  const showPortfolioPct = portfolioTotal != null && portfolioTotal > 0;
+  const sorted = [...stocks].sort((a, b) => (b.pct_of_group || 0) - (a.pct_of_group || 0));
 
   return (
     <div className="overflow-x-auto">
@@ -55,41 +59,41 @@ function StockList({ stocks, totalValue, portfolioTotal, onUpdate, onDelete, onR
             <th className="pb-3 pr-4 font-medium text-right">Price</th>
             <th className="pb-3 pr-4 font-medium text-right">Day Change</th>
             <th className="pb-3 pr-4 font-medium text-right">Market Value</th>
-            {showPct && <th className="pb-3 pr-4 font-medium text-right" title="Percent of category">% Cat</th>}
-            {showPortfolioPct && <th className="pb-3 pr-4 font-medium text-right" title="Percent of total portfolio">% Port</th>}
+            <th className="pb-3 pr-4 font-medium text-right" title="Percent of category">% Cat</th>
+            <th className="pb-3 pr-4 font-medium text-right" title="Percent of total portfolio">% Port</th>
             <th className="pb-3 pr-4 font-medium text-right">Div Yield</th>
             <th className="pb-3 pr-3 font-medium">52W Range</th>
             <th className="pb-3 pr-4 font-medium text-right">Updated</th>
-            <th className="pb-3 font-medium"></th>
+            {canEdit && <th className="pb-3 font-medium"></th>}
           </tr>
         </thead>
         <tbody>
           {sorted.map(s => {
-            const pct = showPct ? ((s.market_value || 0) / totalValue * 100) : null;
-            const portPct = showPortfolioPct ? ((s.market_value || 0) / portfolioTotal * 100) : null;
-            const changeColor = s.day_change > 0 ? 'text-emerald-400' : s.day_change < 0 ? 'text-red-400' : 'text-gray-400';
+            const changeColor = s.day_change_pct > 0 ? 'text-emerald-400' : s.day_change_pct < 0 ? 'text-red-400' : 'text-gray-400';
             const isCash = s.is_cash;
             return (
             <tr key={s.id} className="border-b border-gray-800/50 hover:bg-gray-900/50 transition">
               <td className="py-3 pr-4 font-mono font-bold text-blue-400">{s.ticker}</td>
               <td className="py-3 pr-4 text-gray-300 max-w-[200px] truncate">{isCash ? 'Cash' : s.company_name}</td>
-              <td className="py-3 pr-4 text-right tabular-nums">{isCash ? '—' : s.shares}</td>
-              <td className="py-3 pr-4 text-right tabular-nums font-medium">{isCash ? '—' : formatCurrency(s.current_price)}</td>
+              <td className="py-3 pr-4 text-right tabular-nums">{isCash ? '—' : (masked ? <Masked /> : s.shares)}</td>
+              <td className="py-3 pr-4 text-right tabular-nums font-medium">{isCash ? '—' : (masked ? <Masked /> : formatCurrency(s.current_price))}</td>
               <td className={`py-3 pr-4 text-right tabular-nums text-xs font-medium ${changeColor}`}>
-                {isCash ? '—' : formatChange(s.day_change, s.day_change_pct)}
+                {isCash ? '—' : (masked
+                  ? `${(s.day_change_pct ?? 0) >= 0 ? '+' : ''}${(s.day_change_pct ?? 0).toFixed(2)}%`
+                  : formatChange(s.day_change, s.day_change_pct))}
               </td>
-              <td className="py-3 pr-4 text-right tabular-nums font-medium">{formatCurrency(s.market_value)}</td>
-              {showPct && <td className="py-3 pr-4 text-right tabular-nums text-gray-400">{pct.toFixed(1)}%</td>}
-              {showPortfolioPct && <td className="py-3 pr-4 text-right tabular-nums text-gray-400">{portPct.toFixed(1)}%</td>}
+              <td className="py-3 pr-4 text-right tabular-nums font-medium">{masked ? <Masked /> : formatCurrency(s.market_value)}</td>
+              <td className="py-3 pr-4 text-right tabular-nums text-gray-400">{(s.pct_of_group ?? 0).toFixed(1)}%</td>
+              <td className="py-3 pr-4 text-right tabular-nums text-gray-400">{(s.pct_of_portfolio ?? 0).toFixed(1)}%</td>
               <td className="py-3 pr-4 text-right tabular-nums text-gray-400">
                 {isCash ? '—' : (s.dividend_yield ? `${s.dividend_yield.toFixed(2)}%` : '—')}
               </td>
               <td className="py-3 pr-3">
-                {isCash ? <span className="text-gray-600">—</span> : <RangeBar low={s.week52_low} high={s.week52_high} current={s.current_price} />}
+                {isCash || masked ? <span className="text-gray-600">—</span> : <RangeBar low={s.week52_low} high={s.week52_high} current={s.current_price} />}
               </td>
               <td className="py-3 pr-4 text-right text-xs text-gray-500">{formatTime(s.last_updated)}</td>
-              <td className="py-3 flex gap-2">
-                {onUpdate && (
+              {canEdit && (
+                <td className="py-3 flex gap-2">
                   <button
                     onClick={() => { setEditingStock(s); setShowModal(true); }}
                     className="text-gray-500 hover:text-blue-400 transition text-xs"
@@ -97,24 +101,24 @@ function StockList({ stocks, totalValue, portfolioTotal, onUpdate, onDelete, onR
                   >
                     Edit
                   </button>
-                )}
-                {onRefresh && !isCash && (
+                  {!isCash && (
+                    <button
+                      onClick={() => onRefresh(s.id)}
+                      className="text-gray-500 hover:text-blue-400 transition text-xs"
+                      title="Refresh price"
+                    >
+                      Refresh
+                    </button>
+                  )}
                   <button
-                    onClick={() => onRefresh(s.id)}
-                    className="text-gray-500 hover:text-blue-400 transition text-xs"
-                    title="Refresh price"
+                    onClick={() => onDelete(s.id)}
+                    className="text-gray-500 hover:text-red-400 transition text-xs"
+                    title="Delete"
                   >
-                    Refresh
+                    Delete
                   </button>
-                )}
-                <button
-                  onClick={() => onDelete(s.id)}
-                  className="text-gray-500 hover:text-red-400 transition text-xs"
-                  title="Delete"
-                >
-                  Delete
-                </button>
-              </td>
+                </td>
+              )}
             </tr>
           );
           })}
@@ -124,7 +128,7 @@ function StockList({ stocks, totalValue, portfolioTotal, onUpdate, onDelete, onR
   );
 }
 
-export default function StockTable({ stocks, marketOpen, portfolioTotal, onAdd, onUpdate, onDelete, onRefresh }) {
+export default function StockTable({ stocks, marketOpen, masked = false, canEdit = false, onAdd, onUpdate, onDelete, onRefresh }) {
   const [showModal, setShowModal] = useState(false);
   const [editingStock, setEditingStock] = useState(null);
 
@@ -146,17 +150,19 @@ export default function StockTable({ stocks, marketOpen, portfolioTotal, onAdd, 
           )}
           {marketOpen && <span className="text-xs text-emerald-400">Live</span>}
         </div>
-        <button
-          onClick={() => { setEditingStock(null); setShowModal(true); }}
-          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition"
-        >
-          + Add Stock
-        </button>
+        {canEdit && (
+          <button
+            onClick={() => { setEditingStock(null); setShowModal(true); }}
+            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition"
+          >
+            + Add Stock
+          </button>
+        )}
       </div>
 
       {stocks.length === 0 ? (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-500">
-          No stocks yet. Click "Add Stock" to get started.
+          {canEdit ? 'No stocks yet. Click "Add Stock" to get started.' : 'No stocks to display.'}
         </div>
       ) : (
         <div className="space-y-8">
@@ -166,8 +172,8 @@ export default function StockTable({ stocks, marketOpen, portfolioTotal, onAdd, 
               <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden p-4">
                 <StockList
                   stocks={individualStocks}
-                  totalValue={individualStocks.reduce((sum, s) => sum + (s.market_value || 0), 0)}
-                  portfolioTotal={portfolioTotal}
+                  masked={masked}
+                  canEdit={canEdit}
                   onUpdate={onUpdate}
                   onDelete={onDelete}
                   onRefresh={onRefresh}
@@ -186,8 +192,8 @@ export default function StockTable({ stocks, marketOpen, portfolioTotal, onAdd, 
               <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden p-4">
                 <StockList
                   stocks={diversifiedAndCash}
-                  totalValue={diversifiedAndCash.reduce((sum, s) => sum + (s.market_value || 0), 0)}
-                  portfolioTotal={portfolioTotal}
+                  masked={masked}
+                  canEdit={canEdit}
                   onUpdate={onUpdate}
                   onDelete={onDelete}
                   onRefresh={onRefresh}
