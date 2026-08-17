@@ -2,13 +2,23 @@ import yfinance as yf
 from datetime import datetime, timezone
 
 
-# Use curl_cffi to bypass Yahoo's TLS fingerprinting / bot protection
+# Use curl_cffi to bypass Yahoo's TLS fingerprinting / bot protection.
+# Reuse a single session for the process: each curl_cffi Session holds a native
+# libcurl handle + sockets, so creating one per call (every 15s) leaks native
+# memory and file descriptors until the OOM killer fires.
+_SESSION = None
+
+
 def _get_session():
+    global _SESSION
+    if _SESSION is not None:
+        return _SESSION
     try:
         from curl_cffi import requests
-        return requests.Session(impersonate="chrome", timeout=10)
+        _SESSION = requests.Session(impersonate="chrome", timeout=10)
     except ImportError:
-        return None
+        _SESSION = None
+    return _SESSION
 
 
 def build_occ_symbol(ticker: str, expiration: str, option_type: str, strike: float) -> str:
