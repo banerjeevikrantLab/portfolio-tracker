@@ -8,6 +8,33 @@ from datetime import datetime, timezone
 # memory and file descriptors until the OOM killer fires.
 _SESSION = None
 
+# region agent log
+from services.stock_service import _dbg_th, _dbg_ft, _dbg_json, _dbg_time
+_DBG_LOCK = _dbg_th.Lock()
+_DBG_INFLIGHT = 0
+_DBG_MAX_INFLIGHT = 0
+def _dbg_track(fn):
+    @_dbg_ft.wraps(fn)
+    def wrapper(*args, **kwargs):
+        global _DBG_INFLIGHT, _DBG_MAX_INFLIGHT
+        with _DBG_LOCK:
+            _DBG_INFLIGHT += 1
+            n = _DBG_INFLIGHT
+            _DBG_MAX_INFLIGHT = max(_DBG_MAX_INFLIGHT, n)
+        if n > 1:
+            try:
+                with open("/Users/mrbanerjee/portfolio-tracker/.cursor/debug-e8da93.log", "a") as f:
+                    f.write(_dbg_json.dumps({"sessionId": "e8da93", "runId": "run1", "hypothesisId": "C", "location": "options_service.py:_dbg_track", "message": "shared curl session used concurrently", "data": {"fn": fn.__name__, "inflight": n, "thread": _dbg_th.current_thread().name}, "timestamp": int(_dbg_time.time() * 1000)}) + "\n")
+            except Exception:
+                pass
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            with _DBG_LOCK:
+                _DBG_INFLIGHT -= 1
+    return wrapper
+# endregion
+
 
 def _get_session():
     global _SESSION
@@ -46,6 +73,7 @@ def _option_price_from_row(row) -> float:
     return round(bid or ask or 0, 2)
 
 
+@_dbg_track  # agent log
 def get_option_expirations(ticker: str) -> list[str]:
     """Return available expiration dates (YYYY-MM-DD) for a ticker."""
     if not ticker:
@@ -59,6 +87,7 @@ def get_option_expirations(ticker: str) -> list[str]:
         return []
 
 
+@_dbg_track  # agent log
 def get_option_strikes(ticker: str, expiration: str) -> dict:
     """Return available strikes for calls and puts for a given expiration."""
     result = {"calls": [], "puts": []}
@@ -77,6 +106,7 @@ def get_option_strikes(ticker: str, expiration: str) -> dict:
     return result
 
 
+@_dbg_track  # agent log
 def fetch_option_data(ticker: str, expiration: str, strike: float, option_type: str) -> dict:
     """Resolve a specific option contract and return its current price + metadata."""
     ticker = (ticker or "").strip().upper()
@@ -109,6 +139,7 @@ def fetch_option_data(ticker: str, expiration: str, strike: float, option_type: 
     return result
 
 
+@_dbg_track  # agent log
 def fetch_batch_option_prices(contract_symbols: list[str]) -> dict[str, float]:
     """Fetch current per-share prices for multiple option contract symbols."""
     if not contract_symbols:

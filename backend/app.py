@@ -7,7 +7,9 @@ from services.options_service import (
     fetch_option_data, fetch_batch_option_prices,
     get_option_expirations, get_option_strikes,
 )
-from services.redfin_service import get_property_data, get_property_data_from_url, scrape_redfin_estimate
+from services.redfin_service import (
+    RedfinBlockedError, get_property_data, get_property_data_from_url, scrape_redfin_estimate,
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer
@@ -15,6 +17,25 @@ from functools import wraps
 from datetime import datetime, timezone, timedelta
 import atexit
 import os
+
+# region agent log
+import json as _dbg_json, time as _dbg_time, threading as _dbg_threading, tracemalloc as _dbg_tm, gc as _dbg_gc, subprocess as _dbg_sp
+_DBG_PATH = "/Users/mrbanerjee/portfolio-tracker/.cursor/debug-e8da93.log"
+_dbg_tm.start(1)
+_DBG_BOOT = _dbg_time.time()
+def _dbg(location, message, data, hypothesis_id, run_id="run1"):
+    try:
+        with open(_DBG_PATH, "a") as f:
+            f.write(_dbg_json.dumps({"sessionId": "e8da93", "runId": run_id, "hypothesisId": hypothesis_id, "location": location, "message": message, "data": data, "timestamp": int(_dbg_time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+def _dbg_rss_kb():
+    try:
+        return int(_dbg_sp.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True, timeout=5).stdout.strip() or 0)
+    except Exception:
+        return -1
+_dbg("app.py:boot", "process boot start", {"pid": os.getpid(), "ppid": os.getppid(), "rss_kb": _dbg_rss_kb()}, "E")
+# endregion
 
 app = Flask(__name__)
 CORS(app)
@@ -34,6 +55,62 @@ _token_serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="auth-
 _TOKEN_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 db.init_app(app)
+
+
+def _drop_legacy_purchase_price():
+    """Remove leftover purchase_price so property inserts no longer 500."""
+    try:
+        cols = db.session.execute(text("PRAGMA table_info(properties)")).fetchall()
+        names = {row[1] for row in cols}
+        if "purchase_price" not in names:
+            return
+        if "mortgage_amount" in names:
+            db.session.execute(text(
+                "UPDATE properties SET mortgage_amount = purchase_price "
+                "WHERE (mortgage_amount IS NULL OR mortgage_amount = 0) "
+                "AND purchase_price IS NOT NULL"
+            ))
+            db.session.commit()
+        try:
+            db.session.execute(text("ALTER TABLE properties DROP COLUMN purchase_price"))
+            db.session.commit()
+            return
+        except Exception:
+            db.session.rollback()
+        db.session.execute(text(
+            """
+            CREATE TABLE properties_new (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                owner_id INTEGER,
+                address VARCHAR(500) NOT NULL,
+                redfin_url VARCHAR(1000),
+                mortgage_amount FLOAT DEFAULT 0,
+                estimated_value FLOAT DEFAULT 0,
+                beds FLOAT DEFAULT 0,
+                baths FLOAT DEFAULT 0,
+                sqft INTEGER DEFAULT 0,
+                last_updated DATETIME
+            )
+            """
+        ))
+        db.session.execute(text(
+            """
+            INSERT INTO properties_new (
+                id, owner_id, address, redfin_url, mortgage_amount,
+                estimated_value, beds, baths, sqft, last_updated
+            )
+            SELECT id, owner_id, address, redfin_url, mortgage_amount,
+                   estimated_value, beds, baths, sqft, last_updated
+            FROM properties
+            """
+        ))
+        db.session.execute(text("DROP TABLE properties"))
+        db.session.execute(text("ALTER TABLE properties_new RENAME TO properties"))
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"purchase_price migration skipped: {e}")
+
 
 with app.app_context():
     db.create_all()
@@ -79,6 +156,23 @@ with app.app_context():
         for _table in ("stocks", "options", "properties", "portfolio_snapshots"):
             try:
                 db.session.execute(text(f"ALTER TABLE {_table} ADD COLUMN owner_id INTEGER"))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+        # Old schema had NOT NULL purchase_price; the model now uses mortgage_amount.
+        _drop_legacy_purchase_price()
+        try:
+            db.session.execute(text("ALTER TABLE options ADD COLUMN position VARCHAR(3) DEFAULT 'bto'"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        for col in [
+            "redfin_estimate REAL DEFAULT 0",
+            "last_sold_price REAL DEFAULT 0",
+            "value_source VARCHAR(20) DEFAULT ''",
+        ]:
+            try:
+                db.session.execute(text(f"ALTER TABLE properties ADD COLUMN {col}"))
                 db.session.commit()
             except Exception:
                 db.session.rollback()
@@ -184,7 +278,7 @@ def take_portfolio_snapshot():
             options = Option.query.filter_by(owner_id=user.id).all()
             stock_value = sum(s.shares * (s.current_price or 0) for s in stocks)
             property_equity = sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
-            options_value = sum((o.current_price or 0) * 100 * (o.contracts or 0) for o in options)
+            options_value = sum(o.market_value for o in options)
             total_value = stock_value + property_equity + options_value
             if total_value <= 0:
                 continue
@@ -206,6 +300,42 @@ scheduler.add_job(update_all_stock_prices, "interval", seconds=15, id="stock_upd
 scheduler.add_job(update_all_option_prices, "interval", seconds=15, id="option_updater")
 scheduler.add_job(update_extended_info, "interval", minutes=30, id="extended_info_updater")
 scheduler.add_job(take_portfolio_snapshot, "interval", minutes=30, id="snapshot_recorder")
+
+# region agent log
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_EXECUTED
+_dbg_job_last = {}
+def _dbg_job_event(ev):
+    if ev.code == EVENT_JOB_EXECUTED:
+        if ev.job_id in ("stock_updater", "option_updater"):
+            dur = (datetime.now(timezone.utc) - ev.scheduled_run_time).total_seconds()
+            if dur > 10 or _dbg_job_last.get(ev.job_id, 0) + 300 < _dbg_time.time():
+                _dbg_job_last[ev.job_id] = _dbg_time.time()
+                _dbg("app.py:job_event", "job executed", {"job": ev.job_id, "seconds_since_scheduled": round(dur, 2), "market_open": is_market_open()}, "D")
+        return
+    _dbg("app.py:job_event", "job problem", {"job": ev.job_id, "code": {EVENT_JOB_ERROR: "error", EVENT_JOB_MISSED: "missed", EVENT_JOB_MAX_INSTANCES: "max_instances"}.get(ev.code, ev.code), "exception": repr(getattr(ev, "exception", None))[:300]}, "D")
+scheduler.add_listener(_dbg_job_event, EVENT_JOB_ERROR | EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES | EVENT_JOB_EXECUTED)
+def _dbg_monitor():
+    import yfinance.shared as _yfs
+    from services import stock_service as _ss, options_service as _os
+    cur, peak = _dbg_tm.get_traced_memory()
+    try:
+        fds = len(os.listdir("/dev/fd"))
+    except Exception:
+        fds = -1
+    with app.app_context():
+        snaps = PortfolioSnapshot.query.count()
+    _dbg("app.py:monitor", "memory sample", {
+        "pid": os.getpid(), "uptime_s": int(_dbg_time.time() - _DBG_BOOT), "rss_kb": _dbg_rss_kb(),
+        "py_traced_kb": cur // 1024, "py_peak_kb": peak // 1024, "gc_objects": len(_dbg_gc.get_objects()),
+        "threads": _dbg_threading.active_count(), "open_fds": fds,
+        "yf_dfs": len(_yfs._DFS), "yf_errors": len(_yfs._ERRORS), "yf_tracebacks": len(_yfs._TRACEBACKS),
+        "snapshot_rows": snaps, "market_open": is_market_open(),
+        "stock_session_max_concurrent": _ss._DBG_MAX_INFLIGHT, "options_session_max_concurrent": _os._DBG_MAX_INFLIGHT,
+    }, "A,B,C,D")
+scheduler.add_job(_dbg_monitor, "interval", seconds=60, id="dbg_monitor")
+_dbg_boot_t0 = _dbg_time.time()
+# endregion
+
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown(wait=False))
 
@@ -213,6 +343,10 @@ atexit.register(lambda: scheduler.shutdown(wait=False))
 with app.app_context():
     update_extended_info()
     take_portfolio_snapshot()
+
+# region agent log
+_dbg("app.py:boot", "startup jobs finished (blocks worker boot)", {"pid": os.getpid(), "startup_seconds": round(_dbg_time.time() - _dbg_boot_t0, 2), "rss_kb": _dbg_rss_kb()}, "E")
+# endregion
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +493,24 @@ def create_user():
     return jsonify(user.to_dict()), 201
 
 
+@app.route("/api/users/<int:user_id>", methods=["DELETE"])
+@root_required
+def delete_user(user_id):
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({"error": "Account not found"}), 404
+    if user.role != "private":
+        return jsonify({"error": "Only private accounts can be deleted"}), 400
+
+    # owner_id has no ON DELETE CASCADE, so remove the account's data explicitly.
+    removed = {}
+    for Model, key in ((Stock, "stocks"), (Option, "options"), (Property, "properties"), (PortfolioSnapshot, "snapshots")):
+        removed[key] = Model.query.filter_by(owner_id=user.id).delete(synchronize_session=False)
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({"message": f'Deleted account "{user.username}"', "removed": removed}), 200
+
+
 # ---------------------------------------------------------------------------
 # Portfolio summary
 # ---------------------------------------------------------------------------
@@ -372,7 +524,7 @@ def get_portfolio():
 
     total_stock_value = sum(s.shares * (s.current_price or 0) for s in stocks)
     total_property_equity = sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
-    total_options_value = sum((o.current_price or 0) * 100 * (o.contracts or 0) for o in options)
+    total_options_value = sum(o.market_value for o in options)
 
     total_value = total_stock_value + total_property_equity + total_options_value
 
@@ -494,7 +646,7 @@ def get_stocks():
     portfolio_total = (
         sum(_mv(s) for s in stocks)
         + sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
-        + sum((o.current_price or 0) * 100 * (o.contracts or 0) for o in options)
+        + sum(o.market_value for o in options)
     )
 
     result = []
@@ -677,13 +829,13 @@ def get_options():
     portfolio_total = (
         sum(s.shares * (s.current_price or 0) for s in stocks)
         + sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
-        + sum((o.current_price or 0) * 100 * (o.contracts or 0) for o in options)
+        + sum(o.market_value for o in options)
     )
 
     result = []
     for o in options:
         d = o.to_dict(masked=masked)
-        mv = (o.current_price or 0) * 100 * (o.contracts or 0)
+        mv = o.market_value
         d["pct_of_portfolio"] = round(mv / portfolio_total * 100, 2) if portfolio_total else 0
         result.append(d)
 
@@ -716,14 +868,17 @@ def add_option():
     if option_type not in ("call", "put"):
         option_type = "call"
     expiration = (data.get("expiration") or "").strip()
+    position = (data.get("position") or "bto").lower()
+    if position not in ("bto", "sto"):
+        return jsonify({"error": "Position must be BTO or STO"}), 400
     try:
         strike = float(data.get("strike", 0))
         contracts = int(data.get("contracts", 0))
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid strike or contracts"}), 400
 
-    if not ticker or not expiration or strike <= 0 or contracts == 0:
-        return jsonify({"error": "Ticker, expiration, positive strike, and contracts are required"}), 400
+    if not ticker or not expiration or strike <= 0 or contracts <= 0:
+        return jsonify({"error": "Ticker, expiration, positive strike, and positive contracts are required"}), 400
 
     info = fetch_option_data(ticker, expiration, strike, option_type)
 
@@ -735,6 +890,7 @@ def add_option():
         strike=strike,
         expiration=expiration,
         contracts=contracts,
+        position=position,
         contract_symbol=info.get("contract_symbol", ""),
         current_price=info.get("current_price", 0),
         last_updated=datetime.now(timezone.utc),
@@ -753,9 +909,17 @@ def update_option(option_id):
 
     if "contracts" in data:
         try:
-            option.contracts = int(data["contracts"])
+            contracts = int(data["contracts"])
         except (ValueError, TypeError):
             return jsonify({"error": "Invalid contracts"}), 400
+        if contracts <= 0:
+            return jsonify({"error": "Contracts must be positive"}), 400
+        option.contracts = contracts
+    if "position" in data:
+        position = (data["position"] or "").lower()
+        if position not in ("bto", "sto"):
+            return jsonify({"error": "Position must be BTO or STO"}), 400
+        option.position = position
 
     option.last_updated = datetime.now(timezone.utc)
     db.session.commit()
@@ -803,7 +967,7 @@ def get_properties():
     portfolio_total = (
         sum(s.shares * (s.current_price or 0) for s in stocks)
         + sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
-        + sum((o.current_price or 0) * 100 * (o.contracts or 0) for o in options)
+        + sum(o.market_value for o in options)
     )
 
     result = []
@@ -816,45 +980,68 @@ def get_properties():
     return jsonify({"properties": result, "masked": masked})
 
 
+_REDFIN_BLOCKED_MSG = (
+    "Redfin is temporarily blocking automated lookups from this network. "
+    "Wait 15-30 minutes and try again."
+)
+
+
+def _lookup_redfin_url(url):
+    """Return (redfin_data, error_response)."""
+    try:
+        redfin_data = get_property_data_from_url(url)
+    except RedfinBlockedError:
+        return None, (jsonify({"error": _REDFIN_BLOCKED_MSG}), 503)
+    except Exception as e:
+        return None, (jsonify({"error": f"Failed to look up Redfin listing: {e}"}), 502)
+    if not redfin_data or not redfin_data.get("estimated_value"):
+        return None, (jsonify({
+            "error": "Redfin has no estimate or last sold price for that link"
+        }), 422)
+    return redfin_data, None
+
+
+def _apply_redfin_data(prop, redfin_data):
+    prop.estimated_value = redfin_data["estimated_value"]
+    prop.redfin_estimate = redfin_data.get("redfin_estimate") or 0
+    prop.last_sold_price = redfin_data.get("last_sold_price") or 0
+    prop.value_source = redfin_data.get("value_source") or ""
+    if redfin_data.get("redfin_url"):
+        prop.redfin_url = redfin_data["redfin_url"]
+    if redfin_data.get("address"):
+        prop.address = redfin_data["address"]
+    if redfin_data.get("beds"):
+        prop.beds = redfin_data["beds"]
+    if redfin_data.get("baths"):
+        prop.baths = redfin_data["baths"]
+    if redfin_data.get("sqft"):
+        prop.sqft = redfin_data["sqft"]
+
+
 @app.route("/api/properties", methods=["POST"])
 def add_property():
     owner_id, _, err = resolve_write_owner()
     if err:
         return err
-    data = request.get_json()
-    address = data.get("address", "").strip()
-    redfin_url = data.get("redfin_url", "").strip()
-    mortgage_amount = float(data.get("mortgage_amount", 0))
-    manual_estimated_value = data.get("estimated_value")
+    data = request.get_json() or {}
+    redfin_url = (data.get("redfin_url") or "").strip()
+    try:
+        mortgage_amount = float(data.get("mortgage_amount") or 0)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Mortgage amount must be a number"}), 400
 
-    if not address and not redfin_url:
-        return jsonify({"error": "Address or Redfin link is required"}), 400
+    if not redfin_url:
+        return jsonify({"error": "Redfin link is required"}), 400
+    if "redfin.com" not in redfin_url.lower():
+        return jsonify({"error": "Please paste a valid Redfin property link"}), 400
 
-    if redfin_url:
-        redfin_data = get_property_data_from_url(redfin_url)
-    else:
-        redfin_data = get_property_data(address)
+    redfin_data, err = _lookup_redfin_url(redfin_url)
+    if err:
+        return err
 
-    estimated_value = redfin_data.get("estimated_value", 0) if redfin_data else 0
-    if manual_estimated_value is not None:
-        try:
-            v = float(manual_estimated_value)
-            if v > 0:
-                estimated_value = v
-        except (ValueError, TypeError):
-            pass
-
-    prop = Property(
-        owner_id=owner_id,
-        address=redfin_data["address"] if redfin_data else (address or "Property"),
-        redfin_url=redfin_data.get("redfin_url", redfin_url) if redfin_data else redfin_url,
-        mortgage_amount=mortgage_amount,
-        estimated_value=estimated_value,
-        beds=redfin_data.get("beds", 0) if redfin_data else 0,
-        baths=redfin_data.get("baths", 0) if redfin_data else 0,
-        sqft=redfin_data.get("sqft", 0) if redfin_data else 0,
-        last_updated=datetime.now(timezone.utc),
-    )
+    prop = Property(owner_id=owner_id, address="Property", mortgage_amount=mortgage_amount)
+    _apply_redfin_data(prop, redfin_data)
+    prop.last_updated = datetime.now(timezone.utc)
     db.session.add(prop)
     db.session.commit()
     return jsonify(prop.to_dict()), 201
@@ -865,16 +1052,23 @@ def update_property(prop_id):
     prop, err = _get_owned_or_error(Property, prop_id)
     if err:
         return err
-    data = request.get_json()
+    data = request.get_json() or {}
 
-    if "address" in data:
-        prop.address = data["address"].strip()
-    if "redfin_url" in data:
-        prop.redfin_url = data["redfin_url"].strip()
     if "mortgage_amount" in data:
-        prop.mortgage_amount = float(data["mortgage_amount"])
-    if "estimated_value" in data:
-        prop.estimated_value = float(data["estimated_value"])
+        try:
+            prop.mortgage_amount = float(data["mortgage_amount"] or 0)
+        except (ValueError, TypeError):
+            return jsonify({"error": "Mortgage amount must be a number"}), 400
+
+    new_url = (data.get("redfin_url") or "").strip()
+    if new_url and new_url != (prop.redfin_url or ""):
+        if "redfin.com" not in new_url.lower():
+            return jsonify({"error": "Please paste a valid Redfin property link"}), 400
+        redfin_data, err = _lookup_redfin_url(new_url)
+        if err:
+            db.session.rollback()
+            return err
+        _apply_redfin_data(prop, redfin_data)
 
     prop.last_updated = datetime.now(timezone.utc)
     db.session.commit()
@@ -897,24 +1091,21 @@ def refresh_property(prop_id):
     if err:
         return err
 
-    if prop.redfin_url:
-        details = scrape_redfin_estimate(prop.redfin_url)
-    else:
-        redfin_data = get_property_data(prop.address)
-        if not redfin_data:
-            return jsonify({"error": "Could not find property on Redfin"}), 404
-        details = redfin_data
-        prop.redfin_url = redfin_data.get("redfin_url", prop.redfin_url)
+    try:
+        if prop.redfin_url:
+            details = scrape_redfin_estimate(prop.redfin_url)
+        else:
+            details = get_property_data(prop.address)
+            if not details:
+                return jsonify({"error": "Could not find property on Redfin"}), 404
+    except RedfinBlockedError:
+        return jsonify({"error": _REDFIN_BLOCKED_MSG + " Your saved value was kept."}), 503
 
-    if details.get("estimated_value"):
-        prop.estimated_value = details["estimated_value"]
-    if details.get("beds"):
-        prop.beds = details["beds"]
-    if details.get("baths"):
-        prop.baths = details["baths"]
-    if details.get("sqft"):
-        prop.sqft = details["sqft"]
-
+    if not details or not details.get("estimated_value"):
+        return jsonify({
+            "error": "Redfin returned no estimate or last sold price. Your saved value was kept."
+        }), 422
+    _apply_redfin_data(prop, details)
     prop.last_updated = datetime.now(timezone.utc)
     db.session.commit()
     return jsonify(prop.to_dict())

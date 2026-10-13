@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { listUsers, createUser } from '../api';
+import { listUsers, createUser, deleteUser } from '../api';
 
-export default function ManageAccounts({ onClose }) {
+export default function ManageAccounts({ onClose, onDeleted }) {
   const [users, setUsers] = useState([]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -37,6 +38,23 @@ export default function ManageAccounts({ onClose }) {
       setError(err.response?.data?.error || 'Could not create account');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (user) => {
+    if (!confirm(`Delete "${user.username}"? This permanently removes the account and all of its stocks, options, properties, and history.`)) return;
+    setError('');
+    setMessage('');
+    setDeletingId(user.id);
+    try {
+      await deleteUser(user.id);
+      setMessage(`Deleted account "${user.username}"`);
+      onDeleted?.(user.id);
+      await refresh();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Could not delete account');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -96,7 +114,14 @@ export default function ManageAccounts({ onClose }) {
               {users.map((u) => (
                 <li key={u.id} className="text-sm text-gray-300 flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                  {u.username}
+                  <span className="flex-1">{u.username}</span>
+                  <button
+                    onClick={() => handleDelete(u)}
+                    disabled={deletingId === u.id}
+                    className="text-xs text-gray-500 hover:text-red-400 transition disabled:opacity-50"
+                  >
+                    {deletingId === u.id ? 'Deleting...' : 'Delete'}
+                  </button>
                 </li>
               ))}
             </ul>

@@ -3,6 +3,12 @@ import AddPropertyModal from './AddPropertyModal';
 
 const MASK = '••••';
 
+const VALUE_SOURCE_LABELS = {
+  estimate: 'Redfin Estimate',
+  last_sold: 'Last sold price',
+  list_price: 'List price',
+};
+
 function formatCurrency(val) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val || 0);
 }
@@ -89,14 +95,23 @@ export default function PropertyTable({ properties, masked = false, canEdit = fa
                     <p className="text-lg font-semibold">{money(p.mortgage_amount)}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-gray-500">Estimated Value</p>
+                    <p className="text-xs text-gray-500">Value</p>
                     <p className="text-lg font-semibold">{money(p.estimated_value)}</p>
+                    {!masked && VALUE_SOURCE_LABELS[p.value_source] && (
+                      <p className="text-xs text-gray-500 mt-0.5">{VALUE_SOURCE_LABELS[p.value_source]}</p>
+                    )}
                   </div>
                   <div>
                     <p className="text-xs text-gray-500">Equity</p>
                     <p className="text-lg font-semibold">{money(p.equity)}</p>
                   </div>
                 </div>
+
+                {!masked && (p.redfin_estimate > 0 || p.last_sold_price > 0) && (
+                  <p className="mt-2 text-xs text-gray-500">
+                    Estimate {formatCurrency(p.redfin_estimate)} · Last sold {formatCurrency(p.last_sold_price)}
+                  </p>
+                )}
 
                 <div className="mt-3 pt-3 border-t border-gray-800 flex justify-between items-center">
                   <span className="text-xs text-gray-500">{(p.pct_of_portfolio ?? 0).toFixed(1)}% of portfolio</span>

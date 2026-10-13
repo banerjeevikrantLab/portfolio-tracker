@@ -256,7 +256,13 @@ export default function App() {
         <Login onSuccess={handleLoginSuccess} onClose={() => setShowLogin(false)} />
       )}
       {showAccounts && (
-        <ManageAccounts onClose={() => { setShowAccounts(false); fetchAccounts(); }} />
+        <ManageAccounts
+          onClose={() => { setShowAccounts(false); fetchAccounts(); }}
+          onDeleted={(id) => {
+            if (view === String(id)) setView('root');
+            fetchAccounts();
+          }}
+        />
       )}
     </div>
   );

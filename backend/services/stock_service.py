@@ -24,6 +24,33 @@ def _trailing_12m_dividend(ticker_obj) -> float:
 # memory and file descriptors until the OOM killer fires.
 _SESSION = None
 
+# region agent log
+import functools as _dbg_ft, threading as _dbg_th, json as _dbg_json, time as _dbg_time
+_DBG_LOCK = _dbg_th.Lock()
+_DBG_INFLIGHT = 0
+_DBG_MAX_INFLIGHT = 0
+def _dbg_track(fn):
+    @_dbg_ft.wraps(fn)
+    def wrapper(*args, **kwargs):
+        global _DBG_INFLIGHT, _DBG_MAX_INFLIGHT
+        with _DBG_LOCK:
+            _DBG_INFLIGHT += 1
+            n = _DBG_INFLIGHT
+            _DBG_MAX_INFLIGHT = max(_DBG_MAX_INFLIGHT, n)
+        if n > 1:
+            try:
+                with open("/Users/mrbanerjee/portfolio-tracker/.cursor/debug-e8da93.log", "a") as f:
+                    f.write(_dbg_json.dumps({"sessionId": "e8da93", "runId": "run1", "hypothesisId": "C", "location": "stock_service.py:_dbg_track", "message": "shared curl session used concurrently", "data": {"fn": fn.__name__, "inflight": n, "thread": _dbg_th.current_thread().name}, "timestamp": int(_dbg_time.time() * 1000)}) + "\n")
+            except Exception:
+                pass
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            with _DBG_LOCK:
+                _DBG_INFLIGHT -= 1
+    return wrapper
+# endregion
+
 
 def _get_session():
     global _SESSION
@@ -61,6 +88,7 @@ def _extract_dividend_info(info: dict) -> dict:
     }
 
 
+@_dbg_track  # agent log
 def fetch_stock_data(ticker: str) -> dict:
     """Fetch current price, previous close, dividends, 52-week range, and company name."""
     result = {
@@ -129,6 +157,7 @@ def fetch_stock_data(ticker: str) -> dict:
     return result
 
 
+@_dbg_track  # agent log
 def fetch_batch_prices(tickers: list[str]) -> dict[str, float]:
     """Fetch current prices for multiple tickers at once."""
     if not tickers:
@@ -188,6 +217,7 @@ def fetch_batch_prices(tickers: list[str]) -> dict[str, float]:
     return results
 
 
+@_dbg_track  # agent log
 def fetch_batch_extended_info(tickers: list[str]) -> dict[str, dict]:
     """Fetch previous_close, dividends, and 52-week range for multiple tickers."""
     if not tickers:

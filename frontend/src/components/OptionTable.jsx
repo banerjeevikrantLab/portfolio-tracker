@@ -58,6 +58,7 @@ export default function OptionTable({ options, marketOpen, masked = false, canEd
               <thead>
                 <tr className="text-gray-400 text-left border-b border-gray-800">
                   <th className="pb-3 pr-4 font-medium">Underlying</th>
+                  <th className="pb-3 pr-4 font-medium">Position</th>
                   <th className="pb-3 pr-4 font-medium">Type</th>
                   <th className="pb-3 pr-4 font-medium text-right">Strike</th>
                   <th className="pb-3 pr-4 font-medium">Expiration</th>
@@ -75,6 +76,11 @@ export default function OptionTable({ options, marketOpen, masked = false, canEd
                   return (
                     <tr key={o.id} className="border-b border-gray-800/50 hover:bg-gray-900/50 transition">
                       <td className="py-3 pr-4 font-mono font-bold text-blue-400">{o.underlying_ticker}</td>
+                      <td className="py-3 pr-4">
+                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${o.position === 'sto' ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
+                          {(o.position || 'bto').toUpperCase()}
+                        </span>
+                      </td>
                       <td className={`py-3 pr-4 capitalize font-medium ${typeColor}`}>{o.option_type}</td>
                       <td className="py-3 pr-4 text-right tabular-nums">{masked ? <Masked /> : formatCurrency(o.strike)}</td>
                       <td className="py-3 pr-4 text-gray-300">{o.expiration}</td>
@@ -114,7 +120,7 @@ export default function OptionTable({ options, marketOpen, masked = false, canEd
               </tbody>
               <tfoot>
                 <tr className="text-gray-300 font-medium">
-                  <td className="pt-3" colSpan={6}>Total</td>
+                  <td className="pt-3" colSpan={7}>Total</td>
                   <td className="pt-3 pr-4 text-right tabular-nums">{masked ? <Masked /> : formatCurrency(totalValue)}</td>
                   <td colSpan={canEdit ? 3 : 2}></td>
                 </tr>

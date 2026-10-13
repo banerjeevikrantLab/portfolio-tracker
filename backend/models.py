@@ -94,20 +94,28 @@ class Option(db.Model):
     strike = db.Column(db.Float, nullable=False)
     expiration = db.Column(db.String(10), nullable=False)  # YYYY-MM-DD
     contracts = db.Column(db.Integer, nullable=False, default=1)
+    position = db.Column(db.String(3), default="bto")  # bto (long, +value), sto (short, -value)
     contract_symbol = db.Column(db.String(40), default="")  # OCC symbol
     current_price = db.Column(db.Float, default=0.0)  # per-share premium
     last_updated = db.Column(
         db.DateTime, default=lambda: datetime.now(timezone.utc)
     )
 
+    @property
+    def market_value(self):
+        # Standard equity option multiplier of 100 shares per contract; a sold
+        # (STO) contract is a liability, so it subtracts from the portfolio.
+        sign = -1 if self.position == "sto" else 1
+        return sign * (self.current_price or 0) * 100 * (self.contracts or 0)
+
     def to_dict(self, masked=False):
-        # Standard equity option multiplier of 100 shares per contract
-        market_value = (self.current_price or 0) * 100 * (self.contracts or 0)
+        market_value = self.market_value
         data = {
             "id": self.id,
             "underlying_ticker": self.underlying_ticker,
             "underlying_name": self.underlying_name,
             "option_type": self.option_type or "call",
+            "position": self.position or "bto",
             "strike": self.strike,
             "expiration": self.expiration,
             "contracts": self.contracts,
@@ -130,7 +138,10 @@ class Property(db.Model):
     address = db.Column(db.String(500), nullable=False)
     redfin_url = db.Column(db.String(1000), default="")
     mortgage_amount = db.Column(db.Float, default=0.0)
-    estimated_value = db.Column(db.Float, default=0.0)
+    estimated_value = db.Column(db.Float, default=0.0)  # max(redfin_estimate, last_sold_price)
+    redfin_estimate = db.Column(db.Float, default=0.0)
+    last_sold_price = db.Column(db.Float, default=0.0)
+    value_source = db.Column(db.String(20), default="")  # estimate, last_sold, list_price
     beds = db.Column(db.Float, default=0)
     baths = db.Column(db.Float, default=0)
     sqft = db.Column(db.Integer, default=0)
@@ -146,6 +157,9 @@ class Property(db.Model):
             "redfin_url": self.redfin_url,
             "mortgage_amount": self.mortgage_amount or 0,
             "estimated_value": self.estimated_value,
+            "redfin_estimate": self.redfin_estimate or 0,
+            "last_sold_price": self.last_sold_price or 0,
+            "value_source": self.value_source or "",
             "equity": round(equity, 2),
             "beds": self.beds,
             "baths": self.baths,
@@ -155,7 +169,10 @@ class Property(db.Model):
         if masked:
             data["address"] = None
             data["redfin_url"] = None
-            for field in ("mortgage_amount", "estimated_value", "equity"):
+            for field in (
+                "mortgage_amount", "estimated_value", "redfin_estimate",
+                "last_sold_price", "equity",
+            ):
                 data[field] = None
         return data
 

@@ -8,6 +8,7 @@ export default function AddOptionModal({ option, onAdd, onUpdate, onClose }) {
   const [expiration, setExpiration] = useState('');
   const [strike, setStrike] = useState('');
   const [contracts, setContracts] = useState('1');
+  const [position, setPosition] = useState('bto');
   const [expirations, setExpirations] = useState([]);
   const [strikes, setStrikes] = useState({ calls: [], puts: [] });
   const [loadingChain, setLoadingChain] = useState(false);
@@ -21,6 +22,7 @@ export default function AddOptionModal({ option, onAdd, onUpdate, onClose }) {
       setExpiration(option.expiration || '');
       setStrike(String(option.strike ?? ''));
       setContracts(String(option.contracts ?? '1'));
+      setPosition(option.position || 'bto');
     }
   }, [option]);
 
@@ -66,7 +68,7 @@ export default function AddOptionModal({ option, onAdd, onUpdate, onClose }) {
     if (isEdit) {
       setLoading(true);
       try {
-        await onUpdate(option.id, { contracts: parseInt(contracts, 10) });
+        await onUpdate(option.id, { contracts: parseInt(contracts, 10), position });
         onClose();
       } catch (err) {
         alert('Failed to update option: ' + (err.response?.data?.error || err.message));
@@ -85,6 +87,7 @@ export default function AddOptionModal({ option, onAdd, onUpdate, onClose }) {
         expiration,
         strike: parseFloat(strike),
         contracts: parseInt(contracts, 10),
+        position,
       });
       onClose();
     } catch (err) {
@@ -171,10 +174,34 @@ export default function AddOptionModal({ option, onAdd, onUpdate, onClose }) {
             </>
           )}
           <div>
+            <label className="block text-sm text-gray-400 mb-1">Position</label>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { value: 'bto', label: 'BTO', hint: 'Bought · adds value' },
+                { value: 'sto', label: 'STO', hint: 'Sold · subtracts value' },
+              ].map(p => (
+                <button
+                  key={p.value}
+                  type="button"
+                  onClick={() => setPosition(p.value)}
+                  className={`rounded-lg border px-3 py-2 text-left transition ${
+                    position === p.value
+                      ? 'border-blue-500 bg-blue-500/10 text-white'
+                      : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  <div className="text-sm font-semibold">{p.label}</div>
+                  <div className="text-xs text-gray-500">{p.hint}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
             <label className="block text-sm text-gray-400 mb-1">Contracts</label>
             <input
               type="number"
               step="1"
+              min="1"
               value={contracts}
               onChange={e => setContracts(e.target.value)}
               placeholder="e.g. 1"

@@ -41,6 +41,11 @@ export async function createUser(username, password) {
   return data;
 }
 
+export async function deleteUser(id) {
+  const { data } = await api.delete(`/users/${id}`);
+  return data;
+}
+
 // --- Portfolio data -----------------------------------------------------
 
 export async function getPortfolio(view) {
