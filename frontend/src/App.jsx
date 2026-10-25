@@ -88,16 +88,16 @@ export default function App() {
   };
 
   const masked = portfolio ? portfolio.masked : true;
-  // Root can edit any account (root or any private tab). A private user can
-  // only edit their own ("self") tab; the root tab is read-only for them even
-  // though the numbers are visible.
-  const canEdit = !!user && (
+  // The root tab combines every account, so it is read-only for everyone.
+  // Root edits a private account from that account's tab; a private user can
+  // only edit their own ("self") tab.
+  const canEdit = !!user && view !== 'root' && (
     user.role === 'root' ||
     (user.role === 'private' && view === 'self')
   );
 
   const viewLabel = view === 'root'
-    ? 'the root portfolio'
+    ? 'all accounts combined'
     : view === 'self'
       ? 'your portfolio'
       : `${accounts.find((a) => String(a.id) === view)?.username ?? 'account'}'s portfolio`;
@@ -152,7 +152,7 @@ export default function App() {
               )}
             </span>
           ) : (
-            <span className="text-gray-400">Viewing root portfolio (read-only)</span>
+            <span className="text-gray-400">Viewing all accounts combined (read-only)</span>
           )}
         </div>
 
@@ -169,7 +169,7 @@ export default function App() {
                 onClick={() => setView('root')}
                 className={`px-3 py-1.5 rounded-md transition ${view === 'root' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}
               >
-                Root
+                All accounts
               </button>
             </div>
           )}
@@ -181,7 +181,7 @@ export default function App() {
                   onClick={() => setView('root')}
                   className={`px-3 py-1.5 rounded-md transition ${view === 'root' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}
                 >
-                  Root
+                  All accounts
                 </button>
                 {accounts.map((acct) => (
                   <button

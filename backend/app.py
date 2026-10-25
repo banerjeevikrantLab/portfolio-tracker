@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from sqlalchemy import text
+from sqlalchemy import func, text
 from models import db, Stock, Property, PortfolioSnapshot, Option, User
 from services.stock_service import fetch_stock_data, fetch_batch_prices, fetch_batch_extended_info, is_market_open
 from services.options_service import (
@@ -402,24 +402,89 @@ def root_required(fn):
 def resolve_view():
     """Determine which portfolio to read and whether to mask dollar values.
 
-    Returns (owner_id, masked, current_user). Any authenticated user may see
-    real dollar values (including when viewing the root portfolio); values are
-    only masked for anonymous (logged-out) visitors. The root user may also
-    target any account by passing its numeric id as the view.
+    Returns (scope, masked, current_user). scope is a single owner_id, or None
+    for the root view, which combines every account. Any authenticated user may
+    see real dollar values; values are only masked for anonymous (logged-out)
+    visitors. The root user may also target any account by its numeric id.
     """
     current = get_current_user()
     view = (request.args.get("view") or "root").lower()
-    if view == "self" and current:
+    if view == "self" and current and current.role != "root":
         return current.id, False, current
     # Root can inspect any account (e.g. a private account) by its id.
     if current and current.role == "root" and view.isdigit():
         target = db.session.get(User, int(view))
         if target:
             return target.id, False, current
-    root = get_root_user()
-    owner_id = root.id if root else None
-    masked = current is None or owner_id is None
-    return owner_id, masked, current
+    return None, current is None, current
+
+
+def _holdings(model, scope):
+    """Query a holdings table for one account, or every account when scope is None."""
+    query = model.query
+    return query if scope is None else query.filter_by(owner_id=scope)
+
+
+def _merge_rows(rows, key, count_field, masked):
+    """Collapse rows sharing `key` into one dict for the combined root view.
+
+    Returns [(dict, market_value)]. count_field ("shares" or "contracts") is
+    summed; the row with the largest count supplies every other field.
+    """
+    groups = {}
+    for row in rows:
+        groups.setdefault(key(row), []).append(row)
+    merged = []
+    for group_key, group in groups.items():
+        lead = max(group, key=lambda r: getattr(r, count_field) or 0)
+        d = lead.to_dict()
+        value = sum(_row_value(r) for r in group)
+        d["id"] = "agg-" + "-".join(str(k) for k in group_key)
+        d[count_field] = sum(getattr(r, count_field) or 0 for r in group)
+        d["market_value"] = round(value, 2)
+        d["account_count"] = len({r.owner_id for r in group})
+        if masked:
+            for field in type(lead).MASKED_FIELDS:
+                d[field] = None
+        merged.append((d, value))
+    return merged
+
+
+def _row_value(row):
+    if isinstance(row, Option):
+        return row.market_value
+    return row.shares * (row.current_price or 0)
+
+
+def _option_key(o):
+    return (o.underlying_ticker, o.option_type or "call", o.strike, o.expiration, o.position or "bto")
+
+
+def _merge_stocks(stocks, masked):
+    cash = [s for s in stocks if s.is_cash]
+    merged = _merge_rows(
+        [s for s in stocks if not s.is_cash], lambda s: (s.ticker.upper(),), "shares", masked
+    )
+    if cash:
+        total = sum(_row_value(s) for s in cash)
+        d = cash[0].to_dict()
+        d.update({
+            "id": "agg-cash",
+            "ticker": "Cash",
+            "shares": 1,
+            "current_price": round(total, 2),
+            "market_value": round(total, 2),
+            "account_count": len({s.owner_id for s in cash}),
+        })
+        if masked:
+            for field in Stock.MASKED_FIELDS:
+                d[field] = None
+        merged.append((d, total))
+    merged.sort(key=lambda item: (item[0]["is_cash"], item[0]["ticker"]))
+    return merged
+
+
+_ROOT_READ_ONLY_MSG = "Root is a combined view. Pick an account to add holdings to."
 
 
 def resolve_write_owner():
@@ -437,7 +502,11 @@ def resolve_write_owner():
         target = db.session.get(User, int(view))
         if not target:
             return None, None, (jsonify({"error": "Account not found"}), 404)
+        if target.role == "root":
+            return None, None, (jsonify({"error": _ROOT_READ_ONLY_MSG}), 400)
         return target.id, current, None
+    if current.role == "root":
+        return None, None, (jsonify({"error": _ROOT_READ_ONLY_MSG}), 400)
     return current.id, current, None
 
 
@@ -517,10 +586,10 @@ def delete_user(user_id):
 
 @app.route("/api/portfolio", methods=["GET"])
 def get_portfolio():
-    owner_id, masked, _ = resolve_view()
-    stocks = Stock.query.filter_by(owner_id=owner_id).all()
-    properties = Property.query.filter_by(owner_id=owner_id).all()
-    options = Option.query.filter_by(owner_id=owner_id).all()
+    scope, masked, _ = resolve_view()
+    stocks = _holdings(Stock, scope).all()
+    properties = _holdings(Property, scope).all()
+    options = _holdings(Option, scope).all()
 
     total_stock_value = sum(s.shares * (s.current_price or 0) for s in stocks)
     total_property_equity = sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
@@ -579,9 +648,9 @@ def get_portfolio():
         "total_annual_dividends": None if masked else round(total_annual_dividends, 2),
         "stock_by_category": None if masked else {k: round(v, 2) for k, v in stock_by_category.items()},
         "distribution": distribution,
-        "stock_count": len(stocks),
+        "stock_count": len(_merge_stocks(stocks, masked)) if scope is None else len(stocks),
         "property_count": len(properties),
-        "option_count": len(options),
+        "option_count": len({_option_key(o) for o in options}) if scope is None else len(options),
         "market_open": is_market_open(),
     })
 
@@ -592,7 +661,7 @@ def get_portfolio():
 
 @app.route("/api/portfolio/history", methods=["GET"])
 def get_portfolio_history():
-    owner_id, masked, _ = resolve_view()
+    scope, masked, _ = resolve_view()
     period = request.args.get("period", "1M")
     period_map = {"1D": 1, "1W": 7, "1M": 30, "3M": 90, "1Y": 365, "2Y": 730, "3Y": 1095, "5Y": 1825, "10Y": 3650, "ALL": None}
     days = period_map.get(period, 30)
@@ -601,10 +670,23 @@ def get_portfolio_history():
     if masked:
         return jsonify({"period": period, "masked": True, "snapshots": []})
 
-    query = PortfolioSnapshot.query.filter_by(owner_id=owner_id).order_by(PortfolioSnapshot.timestamp.asc())
+    S = PortfolioSnapshot
+    if scope is None:
+        # Every account is snapshotted in the same pass, so summing rows that
+        # share a timestamp gives the combined portfolio at that moment.
+        query = db.session.query(
+            S.timestamp.label("timestamp"),
+            func.sum(S.total_value).label("total_value"),
+            func.sum(S.stock_value).label("stock_value"),
+            func.sum(S.property_equity).label("property_equity"),
+            func.sum(func.coalesce(S.options_value, 0)).label("options_value"),
+        ).group_by(S.timestamp)
+    else:
+        query = S.query.filter_by(owner_id=scope)
+    query = query.order_by(S.timestamp.asc())
     if days is not None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        query = query.filter(PortfolioSnapshot.timestamp >= cutoff)
+        query = query.filter(S.timestamp >= cutoff)
 
     snapshots = query.all()
     return jsonify({
@@ -629,32 +711,34 @@ def get_portfolio_history():
 
 @app.route("/api/stocks", methods=["GET"])
 def get_stocks():
-    owner_id, masked, _ = resolve_view()
-    stocks = Stock.query.filter_by(owner_id=owner_id).order_by(Stock.ticker).all()
+    scope, masked, _ = resolve_view()
+    stocks = _holdings(Stock, scope).order_by(Stock.ticker).all()
 
-    def _mv(s):
-        return s.shares * (s.current_price or 0)
+    def _group(category):
+        return "individual" if (category or "individual").lower() == "individual" else "other"
+
+    if scope is None:
+        rows = _merge_stocks(stocks, masked)
+    else:
+        rows = [(s.to_dict(masked=masked), _row_value(s)) for s in stocks]
 
     # Group totals mirror the frontend grouping: individual vs (diversified + cash).
     group_totals = {}
-    for s in stocks:
-        group = "individual" if (s.category or "individual").lower() == "individual" else "other"
-        group_totals[group] = group_totals.get(group, 0) + _mv(s)
+    for d, v in rows:
+        group = _group(d["category"])
+        group_totals[group] = group_totals.get(group, 0) + v
 
-    properties = Property.query.filter_by(owner_id=owner_id).all()
-    options = Option.query.filter_by(owner_id=owner_id).all()
+    properties = _holdings(Property, scope).all()
+    options = _holdings(Option, scope).all()
     portfolio_total = (
-        sum(_mv(s) for s in stocks)
+        sum(v for _, v in rows)
         + sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
         + sum(o.market_value for o in options)
     )
 
     result = []
-    for s in stocks:
-        d = s.to_dict(masked=masked)
-        v = _mv(s)
-        group = "individual" if (s.category or "individual").lower() == "individual" else "other"
-        gt = group_totals.get(group, 0)
+    for d, v in rows:
+        gt = group_totals.get(_group(d["category"]), 0)
         d["pct_of_group"] = round(v / gt * 100, 2) if gt else 0
         d["pct_of_portfolio"] = round(v / portfolio_total * 100, 2) if portfolio_total else 0
         result.append(d)
@@ -738,6 +822,9 @@ def _get_owned_or_error(model, obj_id):
         return None, (jsonify({"error": "Not found"}), 404)
     if user.role != "root" and obj.owner_id != user.id:
         return None, (jsonify({"error": "You can only modify your own portfolio"}), 403)
+    root = get_root_user()
+    if root and obj.owner_id == root.id:
+        return None, (jsonify({"error": _ROOT_READ_ONLY_MSG}), 403)
     return obj, None
 
 
@@ -819,23 +906,26 @@ def refresh_stock(stock_id):
 
 @app.route("/api/options", methods=["GET"])
 def get_options():
-    owner_id, masked, _ = resolve_view()
-    options = Option.query.filter_by(owner_id=owner_id).order_by(
+    scope, masked, _ = resolve_view()
+    options = _holdings(Option, scope).order_by(
         Option.underlying_ticker, Option.expiration
     ).all()
 
-    stocks = Stock.query.filter_by(owner_id=owner_id).all()
-    properties = Property.query.filter_by(owner_id=owner_id).all()
+    stocks = _holdings(Stock, scope).all()
+    properties = _holdings(Property, scope).all()
     portfolio_total = (
         sum(s.shares * (s.current_price or 0) for s in stocks)
         + sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)
         + sum(o.market_value for o in options)
     )
 
+    if scope is None:
+        rows = _merge_rows(options, _option_key, "contracts", masked)
+    else:
+        rows = [(o.to_dict(masked=masked), o.market_value) for o in options]
+
     result = []
-    for o in options:
-        d = o.to_dict(masked=masked)
-        mv = o.market_value
+    for d, mv in rows:
         d["pct_of_portfolio"] = round(mv / portfolio_total * 100, 2) if portfolio_total else 0
         result.append(d)
 
@@ -959,11 +1049,11 @@ def refresh_option(option_id):
 
 @app.route("/api/properties", methods=["GET"])
 def get_properties():
-    owner_id, masked, _ = resolve_view()
-    properties = Property.query.filter_by(owner_id=owner_id).order_by(Property.address).all()
+    scope, masked, _ = resolve_view()
+    properties = _holdings(Property, scope).order_by(Property.address).all()
 
-    stocks = Stock.query.filter_by(owner_id=owner_id).all()
-    options = Option.query.filter_by(owner_id=owner_id).all()
+    stocks = _holdings(Stock, scope).all()
+    options = _holdings(Option, scope).all()
     portfolio_total = (
         sum(s.shares * (s.current_price or 0) for s in stocks)
         + sum((p.estimated_value or 0) - (p.mortgage_amount or 0) for p in properties)

@@ -5,8 +5,6 @@ backend/venv/
 
 # Databases: only the main app database is tracked
 *.db
-!backend/instance/portfolio.db
-!backend/portfolio.db
 
 # Node (frontend/ has its own .gitignore)
 node_modules/

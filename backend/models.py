@@ -75,12 +75,14 @@ class Stock(db.Model):
             "last_updated": self.last_updated.isoformat() if self.last_updated else None,
         }
         if masked:
-            for field in (
-                "shares", "current_price", "previous_close", "day_change",
-                "market_value", "annual_dividend", "week52_high", "week52_low",
-            ):
+            for field in self.MASKED_FIELDS:
                 data[field] = None
         return data
+
+    MASKED_FIELDS = (
+        "shares", "current_price", "previous_close", "day_change",
+        "market_value", "annual_dividend", "week52_high", "week52_low",
+    )
 
 
 class Option(db.Model):
@@ -125,9 +127,11 @@ class Option(db.Model):
             "last_updated": self.last_updated.isoformat() if self.last_updated else None,
         }
         if masked:
-            for field in ("strike", "current_price", "market_value", "contracts"):
+            for field in self.MASKED_FIELDS:
                 data[field] = None
         return data
+
+    MASKED_FIELDS = ("strike", "current_price", "market_value", "contracts")
 
 
 class Property(db.Model):
